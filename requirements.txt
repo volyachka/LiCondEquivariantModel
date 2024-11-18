@@ -1,0 +1,17 @@
+# wandb==0.15.5
+tinydb
+pytest
+pyyaml
+numpy
+numba
+ase
+pymatgen
+tqdm
+# tensorflow==2.12
+matplotlib
+scikit-learn
+scikit-image
+sympy
+python-dotenv
+mp-api
+sevenn==0.9.3

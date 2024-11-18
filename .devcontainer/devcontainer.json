@@ -1,0 +1,27 @@
+{
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {},
+        "context": "../"
+    },
+    "remoteUser": "container-user",
+    "runArgs": [
+        "--gpus",
+        "all"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter"
+            ]
+        }
+    },
+    "initializeCommand": "id -u > .tmp_uid && id -g > .tmp_gid",
+    "postAttachCommand": "rm .tmp_uid .tmp_gid",
+    "mounts": [
+        // "source=/mnt/hdd/maevskiy,target=/mnt/hdd/maevskiy,ro,type=bind,consistency=cached"
+        "source=/mnt/hdd/maevskiy/MLIAP-MD-data,target=/mnt/hdd/maevskiy/MLIAP-MD-data,type=bind,consistency=cached"
+    ]
+}
