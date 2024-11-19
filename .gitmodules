@@ -1,0 +1,7 @@
+[submodule "external_lib/SevenNet"]
+    path = external_lib/SevenNet
+    url = 'https://github.com/MDIL-SNU/SevenNet.git'
+
+[submodule "external_lib/e3nn"]
+    path = external_lib/e3nn
+    url = 'https://github.com/e3nn/e3nn.git'

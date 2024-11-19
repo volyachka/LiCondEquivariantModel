@@ -1,6 +1,2 @@
-build/
-dist
-sevenn.egg-info
-*.swp
-dev.vim
-__pycache__/
+.devcontainer
+.mp_apikey
