@@ -15,3 +15,4 @@ sympy
 python-dotenv
 mp-api
 sevenn==0.9.3
+torch_scatter
