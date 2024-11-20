@@ -1,0 +1,67 @@
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+import torch
+from tqdm import tqdm
+
+def train_epoch(model, train_dataloader, optimizer, criterion):
+    model.train()  
+    total_train_loss = 0
+    for data in tqdm(train_dataloader):
+        optimizer.zero_grad()
+        
+        outputs = model(data).squeeze()
+        loss = criterion(outputs, data['target'])
+        
+        loss.backward()
+        optimizer.step()
+        
+        total_train_loss += loss.item()
+    
+    avg_train_loss = total_train_loss / len(train_dataloader)
+    return avg_train_loss
+
+def validate_epoch(model, val_dataloader, criterion):
+    model.eval()  
+    total_val_loss = 0
+
+    with torch.no_grad():  
+        for data in val_dataloader:
+            outputs = model(data).squeeze()
+            loss = criterion(outputs, data['target'])
+            total_val_loss += loss.item()
+    
+    avg_val_loss = total_val_loss / len(val_dataloader)
+    return avg_val_loss
+
+def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs):
+    train_losses = []
+    val_losses = []
+    epochs = []
+
+    for epoch in range(num_epochs):
+        avg_train_loss = train_epoch(model, train_dataloader, optimizer, criterion)
+        train_losses.append(avg_train_loss)
+
+        avg_val_loss = validate_epoch(model, val_dataloader, criterion)
+        val_losses.append(avg_val_loss)
+
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
+
+        clear_output(True)
+        plt.figure(figsize=(15, 10))
+
+        plt.subplot(1, 2, 1)
+        plt.plot(range(1, epoch + 2), train_losses, label='Training Loss', color='blue')
+        plt.title('Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+
+        plt.subplot(1, 2, 2)
+        plt.plot(range(1, epoch + 2), val_losses, label='Validation Loss', color='red')
+        plt.title('Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+
+        plt.show()
