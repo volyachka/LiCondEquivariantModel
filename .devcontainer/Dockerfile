@@ -17,3 +17,4 @@ COPY requirements.txt requirements.txt
 USER $USERNAME
 RUN python3 -m pip install jupyter ipykernel
 RUN python3 -m pip install -r requirements.txt
+
