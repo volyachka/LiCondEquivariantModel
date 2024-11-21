@@ -14,21 +14,26 @@ def setup_cache(
 ) -> joblib.Memory:
     if cache_path is None:
         cache_path = os.getenv(CACHE_ENV_VAR, DEFAULT_CACHE_PATH)
-        print(f"PES fingerprint cache path set to \"{cache_path}\". To change, set {CACHE_ENV_VAR} environment variable.")
+        print(f"Cache path set to \"{cache_path}\". To change, set {CACHE_ENV_VAR} environment variable.")
 
     return joblib.Memory(cache_path)
 
 _memory = setup_cache()
 
 @_memory.cache
-def query_mpid_structure(mpid):
-    
+def _query_mpid_structure(mpids):
     with open(os.path.abspath("../.mp_apikey")) as f:
         MP_API_KEY = f.read().strip()
         
     with MPRester(MP_API_KEY) as mpr:
-        if type(mpid) == type([]):
-            docs = mpr.materials.summary.search(material_ids=mpid, fields=["structure", "material_id"])
-        else:
-            docs = mpr.materials.summary.search(material_ids=[mpid], fields=["structure", "material_id"])
-    return docs
+        docs = mpr.materials.summary.search(material_ids=mpids, fields=["structure", "material_id"])
+    return [d.model_dump() for d in docs]
+
+def query_mpid_structure(mpids: Union[List[str], str]) -> List[dict]:
+    if isinstance(mpids, str):
+        mpids = [mpids]
+
+    return sorted(
+        _query_mpid_structure(sorted(mpids)),
+        key=lambda doc: int(doc["material_id"][3:])
+    )

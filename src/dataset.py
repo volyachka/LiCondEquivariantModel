@@ -14,12 +14,12 @@ from torch_geometric.loader.dataloader import Collater
 def build_dataset(df, temp):
 
     mpids = df[df['temperature'] == temp]['mpid'].to_list()
-    docs = query_mpid_structure(mpid = mpids)
+    docs = query_mpid_structure(mpids=mpids)
 
     dataset = []
     for doc in tqdm(docs):
-        material_id = doc.material_id
-        structure = doc.structure
+        material_id = doc["material_id"]
+        structure = doc["structure"]
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
         log_diffusion = np.log10(df[(df['mpid'] == material_id) & (df['temperature'] == temp)]['v1_Li_slope'].iloc[0])
