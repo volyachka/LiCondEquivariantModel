@@ -13,6 +13,7 @@ scikit-learn
 scikit-image
 sympy
 python-dotenv
-mp-api
+pydantic==2.9.2
+mp-api==0.42.2
 e3nn==0.5.4
 sevenn==0.10.1
