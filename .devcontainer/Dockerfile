@@ -13,8 +13,11 @@ RUN groupadd --gid `cat .tmp_gid` $USERNAME \
     && useradd --uid `cat .tmp_uid` --gid `cat .tmp_gid` -m $USERNAME
 
 WORKDIR /tmp
-COPY requirements.txt requirements.txt
 USER $USERNAME
 RUN python3 -m pip install jupyter ipykernel
+RUN python3 -m pip install torch
+RUN python3 -m pip install torch_scatter torch_cluster
+
+COPY requirements.txt requirements.txt
 RUN python3 -m pip install -r requirements.txt
 

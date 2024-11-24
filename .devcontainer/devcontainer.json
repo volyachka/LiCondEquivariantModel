@@ -19,7 +19,7 @@
         }
     },
     "initializeCommand": "id -u > .tmp_uid && id -g > .tmp_gid",
-    "postAttachCommand": "pip install -e ./external_libs/SevenNet && pip install -e ./external_libs/e3nn && rm .tmp_uid .tmp_gid",
+    "postAttachCommand": "rm -f .tmp_uid .tmp_gid && . /workspaces/LiCondEquivariantModel/install_ext_editable.sh",
     "mounts": [
         // "source=/mnt/hdd/maevskiy,target=/mnt/hdd/maevskiy,ro,type=bind,consistency=cached"
         "source=/mnt/hdd/maevskiy/MLIAP-MD-data,target=/mnt/hdd/maevskiy/MLIAP-MD-data,ro,type=bind,consistency=cached"
