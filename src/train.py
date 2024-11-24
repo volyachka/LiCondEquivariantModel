@@ -24,11 +24,11 @@ def validate_epoch(model, val_dataloader, criterion):
     model.eval()  
     total_val_loss = 0
 
-    with torch.no_grad():  
-        for data in val_dataloader:
-            outputs = model(data).squeeze()
-            loss = criterion(outputs, data['target'])
-            total_val_loss += loss.item()
+    for data in val_dataloader:
+        with torch.no_grad():
+            outputs = model(data).squeeze().detach()
+        loss = criterion(outputs, data['target'])
+        total_val_loss += loss.item()
     
     avg_val_loss = total_val_loss / len(val_dataloader)
     return avg_val_loss

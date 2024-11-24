@@ -37,3 +37,5 @@ def query_mpid_structure(mpids: Union[List[str], str]) -> List[dict]:
         _query_mpid_structure(sorted(mpids)),
         key=lambda doc: int(doc["material_id"][3:])
     )
+
+

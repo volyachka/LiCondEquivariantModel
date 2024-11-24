@@ -36,37 +36,45 @@ class AtomsToGraphCollater(Collater):
         self,
         cutoff: float,
         noise_std: float,
-        dataset: str,
+        properties_predictor,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
         super().__init__([], follow_batch, exclude_keys)
         self.cutoff = cutoff
         self.noise_std = noise_std
-        self.dataset = dataset
+        self.properties_predictor = properties_predictor
 
-    def __call__(self, batch: List[Any]) -> Any:
-        graph_list = []
+    def set_noise_to_structures(self, batch: List[Any]) -> Any:
         for data in batch:
             atoms = data.x['atoms']
-            log_diffusion = data.x['log_diffusion']
-            calc = SevenNetCalculator('7net-0', device='cpu')
-            atoms.calc = calc
             positions = atoms.get_positions() 
-            noise = np.random.normal(loc=0, scale=self.noise_std, size=positions.shape)
+            noise = np.random.normal(loc=0, scale=self.noise_std, size=positions.shape)    
             atoms.set_positions(positions + noise)
-            with torch.enable_grad():
-                force = atoms.get_forces()
-            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list("ijS", a=atoms, cutoff=self.cutoff, self_interaction=True)  
+            
+        return batch
+
+    def __call__(self, batch: List[Any]) -> Any:
+
+        noise_structures_batch = self.set_noise_to_structures(batch.copy())
+        properties = self.properties_predictor.predict(noise_structures_batch)
+
+        atoms_list = []    
+
+        for data, forces in zip(noise_structures_batch, properties['forces']):
+            atoms = data.x['atoms']
+            log_diffusion = data.x['log_diffusion']
+            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list("ijS", a=atoms, cutoff=self.cutoff, self_interaction=True) 
 
             data = Data(
                 pos=torch.tensor(atoms.get_positions(), dtype=torch.float32),
-                x=torch.tensor(force),
+                x=forces,
                 lattice=torch.tensor(atoms.cell.array, dtype=torch.float32).unsqueeze(0),  # We add a dimension for batching
                 edge_index=torch.stack([torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
                 target = torch.tensor(log_diffusion, dtype=torch.float32)
             )
-            graph_list.append(data)
 
-        return super().__call__(graph_list)
+            atoms_list.append(data)
+
+        return super().__call__(atoms_list)
