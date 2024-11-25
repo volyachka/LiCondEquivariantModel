@@ -16,7 +16,7 @@ def assign_dummy_y(atoms):
     dummy['forces'] = np.full((len(atoms), 3), np.nan) 
     dummy['stress'] = np.full((6,), np.nan)  
     calc = SinglePointCalculator(atoms, **dummy)
-    atoms = calc.get_atoms()
+    # atoms = calc.get_atoms()  ## this line does nothing
     return calc.get_atoms()
 
 

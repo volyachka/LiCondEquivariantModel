@@ -2,7 +2,7 @@ from typing import Any, List, Optional, Sequence
 import ase.io
 from sevenn.sevennet_calculator import SevenNetCalculator
 
-
+from copy import deepcopy
 from pymatgen.io.ase import AseAtomsAdaptor
 from torch_geometric.data import Data
 import numpy as np
@@ -56,19 +56,21 @@ class AtomsToGraphCollater(Collater):
 
     def __call__(self, batch: List[Any]) -> Any:
 
-        noise_structures_batch = self.set_noise_to_structures(batch.copy())
+        noise_structures_batch = self.set_noise_to_structures(deepcopy(batch))
         properties = self.properties_predictor.predict(noise_structures_batch)
 
         atoms_list = []    
 
         for data, forces in zip(noise_structures_batch, properties['forces']):
+            forces_mag = forces.norm(dim=1, keepdim=True)
+            factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
             atoms = data.x['atoms']
             log_diffusion = data.x['log_diffusion']
             edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list("ijS", a=atoms, cutoff=self.cutoff, self_interaction=True) 
 
             data = Data(
                 pos=torch.tensor(atoms.get_positions(), dtype=torch.float32),
-                x=forces,
+                x=forces * factor,
                 lattice=torch.tensor(atoms.cell.array, dtype=torch.float32).unsqueeze(0),  # We add a dimension for batching
                 edge_index=torch.stack([torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
