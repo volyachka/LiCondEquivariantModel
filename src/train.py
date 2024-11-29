@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import torch
 from tqdm import tqdm
+import wandb
 
 def train_epoch(model, train_dataloader, optimizer, criterion):
     model.train()  
@@ -33,10 +34,22 @@ def validate_epoch(model, val_dataloader, criterion):
     avg_val_loss = total_val_loss / len(val_dataloader)
     return avg_val_loss
 
-def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs):
+def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, verbose = True, project_name = None):
     train_losses = []
     val_losses = []
     epochs = []
+
+    if project_name is not None:
+
+        config = {
+            "learning_rate": optimizer.param_groups[0]['lr'],
+            "batch_size": train_dataloader.batch_size if hasattr(train_dataloader, 'batch_size') else 'unknown',
+            "num_epochs": num_epochs,
+            "model": type(model).__name__,
+            "optimizer": type(optimizer).__name__,
+        }
+            
+        wandb.init(project=project_name, config=config)
 
     for epoch in range(num_epochs):
         avg_train_loss = train_epoch(model, train_dataloader, optimizer, criterion)
@@ -45,23 +58,33 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epo
         avg_val_loss = validate_epoch(model, val_dataloader, criterion)
         val_losses.append(avg_val_loss)
 
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
+        wandb.log({
+                    "epoch": epoch + 1,
+                    "train_loss": avg_train_loss,
+                    "val_loss": avg_val_loss
+                })
+        
+        if verbose == True:
 
-        clear_output(True)
-        plt.figure(figsize=(15, 10))
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
 
-        plt.subplot(1, 2, 1)
-        plt.plot(range(1, epoch + 2), train_losses, label='Training Loss', color='blue')
-        plt.title('Training Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
+            clear_output(True)
+            plt.figure(figsize=(15, 10))
 
-        plt.subplot(1, 2, 2)
-        plt.plot(range(1, epoch + 2), val_losses, label='Validation Loss', color='red')
-        plt.title('Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
+            plt.subplot(1, 2, 1)
+            plt.plot(range(1, epoch + 2), train_losses, label='Training Loss', color='blue')
+            plt.title('Training Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+
+            plt.subplot(1, 2, 2)
+            plt.plot(range(1, epoch + 2), val_losses, label='Validation Loss', color='red')
+            plt.title('Validation Loss')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
 
         plt.show()
+
+    wandb.finish()
