@@ -64,9 +64,9 @@ class SevenNetPropertiesPreditcor():
         energies = []
         total_lenn = 0
 
-        for lenn in atoms_len:
+        for index, lenn in enumerate(atoms_len):
             forces.append(sevennet_output.inferred_force[total_lenn:total_lenn+lenn, :].clone().detach())
-            energies.append(sevennet_output.scaled_atomic_energy[total_lenn:total_lenn+lenn, :].clone().detach())
+            energies.append(sevennet_output.inferred_total_energy[index].clone().detach())
             total_lenn += lenn
         
         return  {

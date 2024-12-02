@@ -55,8 +55,6 @@ class AtomsToGraphCollater(Collater):
         return batch
 
     def __call__(self, batch: List[Any]) -> Any:
-        print('set_noise_to_structures')
-
         atoms_batch = [data.x['atoms'] for data in batch]
         noise_structures_batch = self.set_noise_to_structures(deepcopy(atoms_batch))
         properties_batch = self.properties_predictor.predict(noise_structures_batch)
