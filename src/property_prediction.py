@@ -23,9 +23,12 @@ def assign_dummy_y(atoms):
 class SevenNetPropertiesPreditcor():
     def __init__(
             self,
-            sevennet_model,
-            sevennet_config,
+            config_name,
         ):
+
+        checkpoint = sevenn.util.pretrained_name_to_path(config_name)
+        sevennet_model, sevennet_config = sevenn.util.model_from_checkpoint(checkpoint)
+
         self.sevennet_model = sevennet_model
         self.sevennet_config = sevennet_config
 
@@ -33,9 +36,9 @@ class SevenNetPropertiesPreditcor():
 
         atoms_list = []    
         atoms_len = []
-        for data in batch:
-            atoms_list.append(assign_dummy_y(data.x["atoms"]))
-            atoms_len.append(data.x["atoms"].get_positions().shape[0])
+        for atoms in batch:
+            atoms_list.append(assign_dummy_y(atoms))
+            atoms_len.append(atoms.get_positions().shape[0])
 
         atoms_list = _set_atoms_y(atoms_list)
 
@@ -45,6 +48,7 @@ class SevenNetPropertiesPreditcor():
                     num_cores=max(1, self.sevennet_config['_num_workers']),
                     y_from_calc=False,
                 )
+
 
         sevennet_inference_set = AtomGraphDataset(sevennet_data_list, self.sevennet_config['cutoff'])
         sevennet_inference_set.x_to_one_hot_idx(self.sevennet_config['_type_map'])

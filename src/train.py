@@ -37,7 +37,6 @@ def validate_epoch(model, val_dataloader, criterion):
 def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, verbose = True, project_name = None):
     train_losses = []
     val_losses = []
-    epochs = []
 
     if project_name is not None:
 
@@ -58,12 +57,13 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epo
         avg_val_loss = validate_epoch(model, val_dataloader, criterion)
         val_losses.append(avg_val_loss)
 
-        wandb.log({
-                    "epoch": epoch + 1,
-                    "train_loss": avg_train_loss,
-                    "val_loss": avg_val_loss
-                })
-        
+        if project_name is not None:
+            wandb.log({
+                        "epoch": epoch + 1,
+                        "train_loss": avg_train_loss,
+                        "val_loss": avg_val_loss
+                    })
+            
         if verbose == True:
 
             print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
@@ -87,4 +87,5 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epo
 
         plt.show()
 
-    wandb.finish()
+    if project_name is not None:
+        wandb.finish()
