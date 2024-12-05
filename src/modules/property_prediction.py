@@ -20,7 +20,7 @@ def assign_dummy_y(atoms):
     return calc.get_atoms()
 
 
-class SevenNetPropertiesPreditcor():
+class SevenNetPropertiesPredictor():
     def __init__(
             self,
             config_name,

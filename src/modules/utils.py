@@ -22,7 +22,7 @@ _memory = setup_cache()
 
 @_memory.cache
 def _query_mpid_structure(mpids):
-    with open(os.path.abspath("../.mp_apikey")) as f:
+    with open(os.path.abspath(".mp_apikey")) as f:
         MP_API_KEY = f.read().strip()
         
     with MPRester(MP_API_KEY) as mpr:

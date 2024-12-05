@@ -25,8 +25,6 @@ class SimplePeriodicNetwork(SimpleNetwork):
         if 'batch' in data:
             batch = data['batch']
         else:
-            print('data[pos]')
-            print(data['pos'])
             batch = data['pos'].new_zeros(data['pos'].shape[0], dtype=torch.long)
 
         edge_src = data['edge_index'][0]  # Edge source

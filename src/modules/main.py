@@ -7,10 +7,10 @@ from torch_geometric.loader import DataLoader
 import torch
 
 import sevenn
-from dataset import AtomsToGraphCollater, build_dataset
-from nn import SimplePeriodicNetwork
-from property_prediction import SevenNetPropertiesPreditcor
-from train import train
+from modules.dataset import AtomsToGraphCollater, build_dataset
+from modules.nn import SimplePeriodicNetwork
+from modules.property_prediction import SevenNetPropertiesPreditcor
+from modules.train import train
 
 
 if __name__ == "__main__":

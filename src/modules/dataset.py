@@ -3,17 +3,29 @@ from typing import Any, List, Optional, Sequence
 
 import numpy as np
 import torch
+import pandas as pd
+from sklearn.model_selection import train_test_split
 from torch_geometric.data import Data
 from torch_geometric.loader.dataloader import Collater
 from tqdm import tqdm
 import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor
 
-from sevenn.sevennet_calculator import SevenNetCalculator
-from utils import query_mpid_structure
+from .utils import query_mpid_structure
 
-def build_dataset(df, temp):
+def build_cv_dataloaders(csv_path = 'data/sevennet_slopes.csv', li_column = 'v1_Li_slope', temp = 1000, test_size = 0.2, random_state = 42):
 
+    dataset = build_dataset(csv_path, li_column, temp)
+    train_indices, val_indices = train_test_split(np.arange(len(dataset)), test_size=test_size, random_state = random_state) 
+  
+    train_dataset = [dataset[i] for i in train_indices] 
+    val_dataset = [dataset[i] for i in val_indices] 
+
+    return train_dataset, val_dataset
+
+def build_dataset(csv_path = 'data/sevennet_slopes.csv', li_column = 'v1_Li_slope', temp = 1000, clip_value = 1e-4):
+    df = pd.read_csv(csv_path)
+    df[li_column] = df[li_column].clip(lower=clip_value)
     mpids = df[df['temperature'] == temp]['mpid'].to_list()
     docs = query_mpid_structure(mpids=mpids)
 
