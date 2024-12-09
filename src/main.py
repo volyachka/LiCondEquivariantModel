@@ -1,7 +1,3 @@
-import numpy as np
-import pandas as pd
-import torch.nn as nn
-import torch.optim as optim
 import torch
 
 from modules.dataset import AtomsToGraphCollater, build_dataloader_cv
@@ -48,24 +44,8 @@ if __name__ == "__main__":
         pool_nodes=True,  # We pool nodes to predict total energy
     )
 
-    criterion_name = config['training']['criterion']
-    if criterion_name == "MSELoss":
-        criterion = nn.MSELoss()
 
-    optimizer_name = config['training']['optimizer']
-    learning_rate = config['training']['learning_rate']
-    weight_decay = config['training'].get('weight_decay', 0)
-
-    if optimizer_name == "Adam":
-        optimizer = optim.Adam(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
-    num_epochs = config['training']['num_epochs']
-    project_name = 'LiCondEquivariantModel'
-
-    if config['training']['device'] == "" or config['training']['device'] is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    model = train(net, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, device, verbose = False, project_name = config["wandb"]["project_name"])
+    model = train(net, train_dataloader, val_dataloader, config)
 
     name = config['experiment_name']
     PATH = os.path.join(config['output_dir'], f'{name}.pt')

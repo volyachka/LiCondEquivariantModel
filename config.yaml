@@ -1,13 +1,12 @@
 # General settings
-experiment_name: "baseline_noise_0.1"
+experiment_name: "baseline_2"
 output_dir: "saved_models"  
-
 # Data configuration
 data:
   data_path: "data/sevennet_slopes.csv"
   target_column: "v1_Li_slope"
   temperature: 1000
-  noise_std: 0.1
+  noise_std: 0.01
   batch_size: 10
   num_workers: 4  
   test_size: 0.2
@@ -22,7 +21,8 @@ training:
   criterion: "MSELoss"  
   num_epochs: 500
   device: ""
-
+  verbose: False
+  
 property_predictor:
   name: "sevennet"
   checkpoint: "7net-0"
