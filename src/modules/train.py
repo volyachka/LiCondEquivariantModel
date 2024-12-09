@@ -36,7 +36,7 @@ def validate_epoch(model, val_dataloader, criterion, device):
     avg_val_loss = total_val_loss / len(val_dataloader)
     return avg_val_loss
 
-def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, device = None, verbose = True, project_name = None):
+def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, device, verbose = True, project_name = None):
     train_losses = []
     val_losses = []
 
@@ -52,6 +52,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epo
             "num_epochs": num_epochs,
             "model": type(model).__name__,
             "optimizer": type(optimizer).__name__,
+            "device": device
         }
             
         wandb.init(project=project_name, config=config)
@@ -95,3 +96,5 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion, num_epo
         
     if project_name is not None:
         wandb.finish()
+
+    return model

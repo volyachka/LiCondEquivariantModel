@@ -1,0 +1,30 @@
+# General settings
+experiment_name: "baseline_noise_0.1"
+output_dir: "saved_models"  
+
+# Data configuration
+data:
+  data_path: "data/sevennet_slopes.csv"
+  target_column: "v1_Li_slope"
+  temperature: 1000
+  noise_std: 0.1
+  batch_size: 10
+  num_workers: 4  
+  test_size: 0.2
+  random_state: 42
+
+# Training hyperparameters
+training:
+  radial_cutoff: 5
+  num_neighbors: 10
+  learning_rate: 0.001
+  optimizer: "Adam"  
+  criterion: "MSELoss"  
+  num_epochs: 500
+  device: ""
+
+property_predictor:
+  name: "sevennet"
+  checkpoint: "7net-0"
+wandb:
+  project_name: "LiCondEquivariantModel"

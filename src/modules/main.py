@@ -7,54 +7,69 @@ from torch_geometric.loader import DataLoader
 import torch
 
 import sevenn
-from modules.dataset import AtomsToGraphCollater, build_dataset
-from modules.nn import SimplePeriodicNetwork
-from modules.property_prediction import SevenNetPropertiesPreditcor
-from modules.train import train
+from dataset import AtomsToGraphCollater, build_dataloader_cv
+from nn import SimplePeriodicNetwork
+from property_prediction import SevenNetPropertiesPredictor
+from train import train
 
+import os
+import argparse
+import yaml
+
+def load_config(config_path):
+    """Load configuration from a YAML file."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
 
 if __name__ == "__main__":
 
-    df = pd.read_csv('sevennet_slopes.csv')
-    df['v1_Li_slope'] = df['v1_Li_slope'].clip(lower=1e-4)
-    dataset = build_dataset(df, temp = 1000)
+    parser = argparse.ArgumentParser(description="Train a neural network")
+    parser.add_argument('--config', type=str, default='config.yaml', 
+                        help="Path to the configuration YAML file.")
+    
+    args = parser.parse_args()
+    config = load_config(args.config)
 
-    train_indices, val_indices = train_test_split(np.arange(len(dataset)), test_size=0.2, random_state=42)
+    if config['property_predictor'] == 'sevennet':
+        checkpoint_name = config['property_predictor']['checkpoint']
+        SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name)
 
-    train_dataset = [dataset[i] for i in train_indices]
-    val_dataset = [dataset[i] for i in val_indices]
+    train_dataloader, val_dataloader = build_dataloader_cv(config)
 
-    batch_size = 10
-
-    checkpoint = sevenn.util.pretrained_name_to_path('7net-0')
-    sevennet_model, sevennet_config = sevenn.util.model_from_checkpoint(checkpoint)
-
-    checkpoint_name = '7net-0'
-    sevennet_predictor = SevenNetPropertiesPreditcor(checkpoint_name)
- 
-
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
-    train_dataloader.collate_fn = AtomsToGraphCollater(cutoff = 5, noise_std=0.01, properties_predictor = sevennet_predictor)
-
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
-    val_dataloader.collate_fn = AtomsToGraphCollater(cutoff = 5, noise_std=0.01, properties_predictor = sevennet_predictor)
-
-    radial_cutoff = 5
+    train_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], noise_std = config['data']['noise_std'], properties_predictor = SevennetPredictor)
+    val_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], noise_std=config['data']['noise_std'], properties_predictor = SevennetPredictor)
 
     net = SimplePeriodicNetwork(
         irreps_in="1x1o",  
         irreps_out="1x0e",  # Single scalar (L=0 and even parity) to output (for example) energy
-        max_radius=radial_cutoff, # Cutoff radius for convolution
-        num_neighbors=10.0,  # scaling factor based on the typical number of neighbors
+        max_radius=config['training']['radial_cutoff'], # Cutoff radius for convolution
+        num_neighbors=config['training']['num_neighbors'],  # scaling factor based on the typical number of neighbors
         pool_nodes=True,  # We pool nodes to predict total energy
     )
 
-    criterion = nn.MSELoss()  # Example: Mean Squared Error
-    optimizer = optim.Adam(net.parameters(), lr=0.001)
+    criterion_name = config['training']['criterion']
+    if criterion_name == "MSELoss":
+        criterion = nn.MSELoss()
 
-    num_epochs = 50
-    # project_name = 'LiCondEquivariantModel'
-    project_name = None
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    optimizer_name = config['training']['optimizer']
+    learning_rate = config['training']['learning_rate']
+    weight_decay = config['training'].get('weight_decay', 0)
 
-    train(net, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, device, verbose = False, project_name = project_name)
+    if optimizer_name == "Adam":
+        optimizer = optim.Adam(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    num_epochs = config['training']['num_epochs']
+    project_name = 'LiCondEquivariantModel'
+
+    if config['training']['device'] == "" or config['training']['device'] is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    model = train(net, train_dataloader, val_dataloader, optimizer, criterion, num_epochs, device, verbose = False, project_name = config["wandb"]["project_name"])
+
+    name = config['experiment_name']
+    PATH = os.path.join(config['output_dir'], f'{name}.pt')
+    torch.save(model.state_dict(), PATH)
