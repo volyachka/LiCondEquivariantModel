@@ -12,7 +12,7 @@ import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor
 from torch_geometric.loader import DataLoader
 
-from utils import query_mpid_structure
+from .utils import query_mpid_structure
 
 def build_dataloader_cv(config):
 

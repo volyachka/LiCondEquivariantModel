@@ -2,15 +2,12 @@ import numpy as np
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.model_selection import train_test_split
-from torch_geometric.loader import DataLoader
 import torch
 
-import sevenn
-from dataset import AtomsToGraphCollater, build_dataloader_cv
-from nn import SimplePeriodicNetwork
-from property_prediction import SevenNetPropertiesPredictor
-from train import train
+from modules.dataset import AtomsToGraphCollater, build_dataloader_cv
+from modules.nn import SimplePeriodicNetwork
+from modules.property_prediction import SevenNetPropertiesPredictor
+from modules.train import train
 
 import os
 import argparse
@@ -34,7 +31,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = load_config(args.config)
 
-    if config['property_predictor'] == 'sevennet':
+    if config['property_predictor']['name'] == 'sevennet':
         checkpoint_name = config['property_predictor']['checkpoint']
         SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name)
 
