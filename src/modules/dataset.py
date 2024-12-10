@@ -16,7 +16,7 @@ from .utils import query_mpid_structure
 
 def build_dataloader_cv(config):
 
-    dataset = build_dataset(config['data']['data_path'], config['data']['target_column'], config['data']['temperature'])
+    dataset = build_dataset(config['data']['data_path'], config['data']['target_column'], config['data']['temperature'],  config['data']['clip_value'])
     train_indices, val_indices = train_test_split(np.arange(len(dataset)), test_size=config['data']['test_size'], random_state = config['data']['random_state']) 
   
     train_dataset = [dataset[i] for i in train_indices] 

@@ -11,6 +11,7 @@ data:
   num_workers: 4  
   test_size: 0.2
   random_state: 42
+  clip_value: 0.0001
 
 # Training hyperparameters
 training:
