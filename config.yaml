@@ -1,5 +1,5 @@
 # General settings
-experiment_name: "baseline_2"
+experiment_name: "num_neighbors_50_forces_divided_by_mass_false_2"
 output_dir: "saved_models"  
 # Data configuration
 data:
@@ -7,7 +7,7 @@ data:
   target_column: "v1_Li_slope"
   temperature: 1000
   noise_std: 0.01
-  batch_size: 10
+  batch_size: 20
   num_workers: 4  
   test_size: 0.2
   random_state: 42
@@ -16,16 +16,19 @@ data:
 # Training hyperparameters
 training:
   radial_cutoff: 5
-  num_neighbors: 10
+  num_neighbors: 50
   learning_rate: 0.001
   optimizer: "Adam"  
   criterion: "MSELoss"  
   num_epochs: 500
-  device: ""
+  device: "cuda:1"
   verbose: False
+  save_model_every_n_epochs: 20
+  forces_divided_by_mass: False
   
 property_predictor:
   name: "sevennet"
   checkpoint: "7net-0"
 wandb:
   project_name: "LiCondEquivariantModel"
+  entity_name: "licondequvariantmodel"

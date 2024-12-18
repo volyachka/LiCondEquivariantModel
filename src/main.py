@@ -27,9 +27,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = load_config(args.config)
 
+    if config['training']['device'] == "" or config['training']['device'] is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    else:
+        device = config['training']['device']
+
     if config['property_predictor']['name'] == 'sevennet':
         checkpoint_name = config['property_predictor']['checkpoint']
-        SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name)
+        SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name, device)
 
     train_dataloader, val_dataloader = build_dataloader_cv(config)
 
