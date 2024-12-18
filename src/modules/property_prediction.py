@@ -24,16 +24,19 @@ class SevenNetPropertiesPredictor():
     def __init__(
             self,
             config_name,
+            device
         ):
 
         checkpoint = sevenn.util.pretrained_name_to_path(config_name)
         sevennet_model, sevennet_config = sevenn.util.model_from_checkpoint(checkpoint)
 
+        self.device = device
         self.sevennet_model = sevennet_model
         self.sevennet_config = sevennet_config
 
     def predict(self, batch: List[Any]) -> List[Any]:
 
+        self.sevennet_model = self.sevennet_model.to(self.device)
         atoms_list = []    
         atoms_len = []
         for atoms in batch:
@@ -54,11 +57,12 @@ class SevenNetPropertiesPredictor():
         sevennet_inference_set.x_to_one_hot_idx(self.sevennet_config['_type_map'])
         sevennet_inference_set.toggle_requires_grad_of_data(sevenn._keys.POS, True)
         sevennet_infer_list = sevennet_inference_set.to_list()
-
+        
         sevennet_batch = DataLoader(sevennet_infer_list, batch_size=len(sevennet_infer_list), shuffle=False)
 
         (sevennet_batch,) = sevennet_batch
-        sevennet_output = self.sevennet_model(sevennet_batch).detach().to("cpu")
+        sevennet_batch = sevennet_batch.to(self.device)
+        sevennet_output = self.sevennet_model(sevennet_batch).detach()
 
         forces = []
         energies = []
