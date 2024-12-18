@@ -33,6 +33,7 @@ def build_dataset(csv_path = 'data/sevennet_slopes.csv', li_column = 'v1_Li_slop
     docs = query_mpid_structure(mpids=mpids)
 
     dataset = []
+    num_samples = 0
     for doc in tqdm(docs):
         material_id = doc["material_id"]
         structure = doc["structure"]
@@ -53,6 +54,7 @@ class AtomsToGraphCollater(Collater):
         cutoff: float,
         noise_std: float,
         properties_predictor,
+        forces_divided_by_mass = False,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -60,41 +62,50 @@ class AtomsToGraphCollater(Collater):
         self.cutoff = cutoff
         self.noise_std = noise_std
         self.properties_predictor = properties_predictor
+        self.forces_divided_by_mass = forces_divided_by_mass
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
+        noises = []
         for atoms in batch:
             positions = atoms.get_positions() 
             noise = np.random.normal(loc=0, scale=self.noise_std, size=positions.shape)    
             atoms.set_positions(positions + noise)
-            
-        return batch
+            noises.append(noise)
+        return batch, noises
 
     def __call__(self, batch: List[Any]) -> Any:
         atoms_batch = [data.x['atoms'] for data in batch]
-        noise_structures_batch = self.set_noise_to_structures(deepcopy(atoms_batch))
+        noise_structures_batch, noise_values_batch = self.set_noise_to_structures(deepcopy(atoms_batch))
         properties_batch = self.properties_predictor.predict(noise_structures_batch)
 
         atoms_list = []    
 
-        for data, noise_structures, forces in zip(batch, noise_structures_batch, properties_batch['forces']):
+        for data, noise_structures, noise, forces in zip(batch, noise_structures_batch, noise_values_batch, properties_batch['forces']):
             
-            forces_mag = forces.norm(dim=1, keepdim=True)
-            factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
-        
-            atoms = noise_structures
-            log_diffusion = data.x['log_diffusion']
-            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list("ijS", a=atoms, cutoff=self.cutoff, self_interaction=True) 
-
+            if self.forces_divided_by_mass:
+                mass = data.x['atoms'].get_masses()
+                forces_divided_by_mass = forces / mass[:, None]
+                forces_divided_by_mass_mag = forces_divided_by_mass.norm(dim=1, keepdim=True) 
+                factor = torch.log(1.0 + 1000.0 * forces_divided_by_mass_mag) / forces_divided_by_mass_mag 
+                value = factor * forces_divided_by_mass
+            else:
+                forces_mag = forces.norm(dim=1, keepdim=True)
+                factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
+                value = factor * forces
+            
+            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list("ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True) 
+            noise = torch.tensor(noise, dtype=torch.float32, device = value.device)
             data = Data(
-                pos=torch.tensor(atoms.get_positions(), dtype=torch.float32),
-                x=forces * factor,
-                lattice=torch.tensor(atoms.cell.array, dtype=torch.float32).unsqueeze(0), 
+                pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
+                x = value,
+                lattice=torch.tensor(noise_structures.cell.array, dtype=torch.float32).unsqueeze(0), 
                 edge_index=torch.stack([torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
-                target = torch.tensor(log_diffusion, dtype=torch.float32)
+                target = torch.tensor(data.x['log_diffusion'], dtype=torch.float32)
             )
 
         
             atoms_list.append(data)
 
         return super().__call__(atoms_list)
+    
