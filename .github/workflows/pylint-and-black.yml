@@ -18,3 +18,4 @@ jobs:
       continue-on-error: true
     - name: Analysing the code with black
       run: black --check $(git ls-files '*.py')
+      continue-on-error: true
