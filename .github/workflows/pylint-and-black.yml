@@ -23,6 +23,8 @@ jobs:
       id: step_black
     - name: Checking for errors
       run: |
-        if "${{ steps.step_pylint.outcome }}" == "failure" ] || [ "${{ steps.step_black.outcome }}" == "failure" ]; then
+        if [ "${{ steps.step_pylint.outcome }}" == "failure" ] || [ "${{ steps.step_black.outcome }}" == "failure" ]; then
+          echo "pylint status: ${{ steps.step_pylint.outcome }}"
+          echo "black status: ${{ steps.step_black.outcome }}"
           exit 1
         fi
