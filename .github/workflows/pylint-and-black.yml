@@ -16,6 +16,13 @@ jobs:
     - name: Analysing the code with pylint
       run: pylint $(git ls-files '*.py')
       continue-on-error: true
+      id: step_pylint
     - name: Analysing the code with black
       run: black --check $(git ls-files '*.py')
       continue-on-error: true
+      id: step_black
+    - name: Checking for errors
+      run: |
+        if "${{ steps.step_pylint.outcome }}" == "failure" ] || [ "${{ steps.step_black.outcome }}" == "failure" ]; then
+          exit 1
+        fi
