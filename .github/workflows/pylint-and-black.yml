@@ -16,7 +16,7 @@ jobs:
         pip install --upgrade pip
         pip install jupyter ipykernel
         pip install torch
-        pip install --no-use-pep517 torch_scatter
+        cd /tmp && git clone https://github.com/rusty1s/pytorch_scatter.git && python setup.py install
         pip install torch_cluster
         pip install -r requirements.txt
     - name: Analysing the code with pylint
