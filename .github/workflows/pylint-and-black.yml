@@ -14,7 +14,8 @@ jobs:
     - name: Environment setup
       run: |
         pip install -r requirements.txt
-        pip install pylint black jupyter ipykernel torch torch_scatter torch_cluster
+        pip install torch
+        pip install jupyter ipykernel torch_scatter torch_cluster
     - name: Analysing the code with pylint
       run: pylint $(git ls-files '*.py')
       continue-on-error: true
