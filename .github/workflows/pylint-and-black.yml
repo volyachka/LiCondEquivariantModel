@@ -13,9 +13,10 @@ jobs:
         # cache: 'pip'  # only makes things slower
     - name: Environment setup
       run: |
-        pip install -r requirements.txt
+        pip install jupyter ipykernel
         pip install torch
-        pip install jupyter ipykernel torch_scatter torch_cluster
+        pip install torch_scatter torch_cluster
+        pip install -r requirements.txt
     - name: Analysing the code with pylint
       run: pylint $(git ls-files '*.py')
       continue-on-error: true
