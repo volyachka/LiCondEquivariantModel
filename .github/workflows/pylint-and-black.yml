@@ -13,6 +13,7 @@ jobs:
         # cache: 'pip'  # only makes things slower
     - name: Environment setup
       run: |
+        pip install --upgrade pip
         pip install jupyter ipykernel
         pip install torch
         pip install torch_scatter torch_cluster
