@@ -16,7 +16,8 @@ jobs:
         pip install --upgrade pip
         pip install jupyter ipykernel
         pip install torch
-        pip install torch_scatter torch_cluster
+        pip install --no-use-pep517 torch_scatter
+        pip install torch_cluster
         pip install -r requirements.txt
     - name: Analysing the code with pylint
       run: pylint $(git ls-files '*.py')
