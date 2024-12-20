@@ -3,6 +3,27 @@ name: Pylint-and-Black
 on: [push]
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Environment setup
+      run: |
+        python -m venv /tmp/job_env
+        source /tmp/job_env/bin/activate
+        pip install --upgrade pip
+        pip install jupyter ipykernel
+        pip install torch
+        pip install -r requirements.txt
+        # git clone https://github.com/rusty1s/pytorch_scatter.git /tmp/pytorch_scatter && cd /tmp/pytorch_scatter && python setup.py install && cd -
+        # git clone https://github.com/rusty1s/pytorch_cluster.git /tmp/pytorch_cluster && cd /tmp/pytorch_cluster && python setup.py install && cd -
+    - uses: actions/cache@v3
+      with:
+        path: /tmp/job_env
+        key: pylint-and-black-env-cache
   main:
     runs-on: ubuntu-latest
     steps:
@@ -10,15 +31,12 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        # cache: 'pip'  # only makes things slower
+    - uses: actions/cache@v3
+      with:
+        path: /tmp/job_env
+        key: pylint-and-black-env-cache
     - name: Environment setup
-      run: |
-        pip install --upgrade pip
-        pip install jupyter ipykernel
-        pip install torch
-        pip install -r requirements.txt
-        git clone https://github.com/rusty1s/pytorch_scatter.git /tmp/pytorch_scatter && cd /tmp/pytorch_scatter && python setup.py install && cd -
-        git clone https://github.com/rusty1s/pytorch_cluster.git /tmp/pytorch_cluster && cd /tmp/pytorch_cluster && python setup.py install && cd -
+      run: source /tmp/job_env/bin/activate
     - name: Analysing the code with pylint
       run: pylint $(git ls-files '*.py')
       continue-on-error: true
