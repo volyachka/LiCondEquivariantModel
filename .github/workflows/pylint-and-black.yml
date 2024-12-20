@@ -25,6 +25,7 @@ jobs:
         path: /tmp/job_env
         key: pylint-and-black-env-cache
   main:
+    needs: build
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -38,11 +39,11 @@ jobs:
     - name: Environment setup
       run: source /tmp/job_env/bin/activate
     - name: Analysing the code with pylint
-      run: pylint $(git ls-files '*.py')
+      run: python -m pylint $(git ls-files '*.py')
       continue-on-error: true
       id: step_pylint
     - name: Analysing the code with black
-      run: black --check $(git ls-files '*.py')
+      run: python -m black --check $(git ls-files '*.py')
       continue-on-error: true
       id: step_black
     - name: Checking for errors
