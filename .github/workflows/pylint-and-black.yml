@@ -1,0 +1,32 @@
+name: Pylint-and-Black
+
+on: [push]
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        # cache: 'pip'  # only makes things slower
+    - name: Environment setup
+      run: |
+        pip install -r requirements.txt
+        pip install pylint black
+    - name: Analysing the code with pylint
+      run: pylint $(git ls-files '*.py')
+      continue-on-error: true
+      id: step_pylint
+    - name: Analysing the code with black
+      run: black --check $(git ls-files '*.py')
+      continue-on-error: true
+      id: step_black
+    - name: Checking for errors
+      run: |
+        if [ "${{ steps.step_pylint.outcome }}" == "failure" ] || [ "${{ steps.step_black.outcome }}" == "failure" ]; then
+          echo "pylint status: ${{ steps.step_pylint.outcome }}"
+          echo "black status: ${{ steps.step_black.outcome }}"
+          exit 1
+        fi
