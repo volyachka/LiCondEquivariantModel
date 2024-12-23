@@ -37,13 +37,22 @@ if __name__ == "__main__":
         SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name, device)
 
     train_dataloader, val_dataloader = build_dataloader_cv(config)
-
-    train_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], noise_std = config['data']['noise_std'], properties_predictor = SevennetPredictor)
-    val_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], noise_std=config['data']['noise_std'], properties_predictor = SevennetPredictor)
+    
+    train_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], 
+                                                       noise_std = config['data']['noise_std'], 
+                                                       properties_predictor = SevennetPredictor, 
+                                                       forces_divided_by_mass = config['training']['forces_divided_by_mass'],
+                                                       num_agg = config['training']['num_agg'])
+    
+    val_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], 
+                                                     noise_std=config['data']['noise_std'], 
+                                                     properties_predictor = SevennetPredictor, 
+                                                     forces_divided_by_mass = config['training']['forces_divided_by_mass'],
+                                                     num_agg = config['training']['num_agg'])
 
     net = SimplePeriodicNetwork(
         irreps_in="1x1o",  
-        irreps_out="1x0e",  # Single scalar (L=0 and even parity) to output (for example) energy
+        irreps_out="2x0e",  # Single scalar (L=0 and even parity) to output (for example) energy
         max_radius=config['training']['radial_cutoff'], # Cutoff radius for convolution
         num_neighbors=config['training']['num_neighbors'],  # scaling factor based on the typical number of neighbors
         pool_nodes=True,  # We pool nodes to predict total energy
