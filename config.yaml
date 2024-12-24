@@ -1,5 +1,5 @@
 # General settings
-experiment_name: "num_neighbors_50_forces_divided_by_mass_false_2"
+experiment_name: " aggregation_with_importnaces_forces_divided_by_mass_true_1"
 output_dir: "saved_models"  
 # Data configuration
 data:
@@ -7,16 +7,21 @@ data:
   target_column: "v1_Li_slope"
   temperature: 1000
   noise_std: 0.01
-  batch_size: 20
+  batch_size: 10
   num_workers: 4  
   test_size: 0.2
   random_state: 42
   clip_value: 0.0001
 
-# Training hyperparameters
-training:
+model:
   radial_cutoff: 5
   num_neighbors: 50
+  irreps_in: "1x1o"
+  irreps_out: "2x0e"
+  pool_nodes: False
+
+# Training hyperparameters
+training:
   learning_rate: 0.001
   optimizer: "Adam"  
   criterion: "MSELoss"  
@@ -24,11 +29,14 @@ training:
   device: "cuda:1"
   verbose: False
   save_model_every_n_epochs: 20
-  forces_divided_by_mass: False
+  forces_divided_by_mass: True
+  num_agg: 10
   
 property_predictor:
   name: "sevennet"
   checkpoint: "7net-0"
+  
 wandb:
+  verbose: True
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
