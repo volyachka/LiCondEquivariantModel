@@ -1,66 +1,97 @@
-import torch
+"""
+Main module for training and prediction using the SevenNet model.
+"""
 
+# Standard imports
+import os
+import argparse
+
+# Third-party imports
+import torch
+import yaml
+
+# First-party imports
 from modules.dataset import AtomsToGraphCollater, build_dataloader_cv
 from modules.nn import SimplePeriodicNetwork
 from modules.property_prediction import SevenNetPropertiesPredictor
 from modules.train import train
 
-import os
-import argparse
-import yaml
-
 def load_config(config_path):
-    """Load configuration from a YAML file."""
+    """
+    Load configuration from a YAML file.
+    Args:
+        config_path (str): Path to the YAML configuration file.
+
+    Returns:
+        dict: Parsed configuration as a dictionary.
+    """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
-    with open(config_path, 'r') as file:
-        config = yaml.safe_load(file)
-    return config
 
-if __name__ == "__main__":
+    with open(config_path, "r", encoding="utf-8") as file:
+        return yaml.safe_load(file)
 
-    parser = argparse.ArgumentParser(description="Train a neural network")
-    parser.add_argument('--config', type=str, default='config.yaml', 
-                        help="Path to the configuration YAML file.")
-    
+
+def main():
+    """
+    Main entry point for the application.
+    Parses arguments, loads configuration, and executes the training process.
+    """
+    parser = argparse.ArgumentParser(description="Train a neural network.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the YAML configuration file.",
+    )
     args = parser.parse_args()
+
+    # Load configuration
     config = load_config(args.config)
 
-    if config['training']['device'] == "" or config['training']['device'] is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    else:
-        device = config['training']['device']
-
-    if config['property_predictor']['name'] == 'sevennet':
-        checkpoint_name = config['property_predictor']['checkpoint']
-        SevennetPredictor = SevenNetPropertiesPredictor(checkpoint_name, device)
-
-    train_dataloader, val_dataloader = build_dataloader_cv(config)
-    
-    train_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], 
-                                                       noise_std = config['data']['noise_std'], 
-                                                       properties_predictor = SevennetPredictor, 
-                                                       forces_divided_by_mass = config['training']['forces_divided_by_mass'],
-                                                       num_agg = config['training']['num_agg'])
-    
-    val_dataloader.collate_fn = AtomsToGraphCollater(cutoff = config['training']['radial_cutoff'], 
-                                                     noise_std=config['data']['noise_std'], 
-                                                     properties_predictor = SevennetPredictor, 
-                                                     forces_divided_by_mass = config['training']['forces_divided_by_mass'],
-                                                     num_agg = config['training']['num_agg'])
-
-    net = SimplePeriodicNetwork(
-        irreps_in="1x1o",  
-        irreps_out="2x0e",  # Single scalar (L=0 and even parity) to output (for example) energy
-        max_radius=config['training']['radial_cutoff'], # Cutoff radius for convolution
-        num_neighbors=config['training']['num_neighbors'],  # scaling factor based on the typical number of neighbors
-        pool_nodes=True,  # We pool nodes to predict total energy
+    # Determine the device
+    device = (
+        "cuda" if torch.cuda.is_available() else "cpu"
+        if not config["training"]["device"]
+        else config["training"]["device"]
     )
 
+    # Initialize the property predictor
+    if config["property_predictor"]["name"].lower() == "sevennet":
+        checkpoint_name = config["property_predictor"]["checkpoint"]
+        sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name, device)
+    else:
+        raise ValueError(f"Unsupported property predictor: {config['property_predictor']['name']}")
 
-    model = train(net, train_dataloader, val_dataloader, config)
+    # Build dataloaders
+    train_dataloader, val_dataloader = build_dataloader_cv(config)
 
-    name = config['experiment_name']
-    PATH = os.path.join(config['output_dir'], f'{name}.pt')
-    torch.save(model.state_dict(), PATH)
+    # Customize collate functions for dataloaders
+    train_dataloader.collate_fn = AtomsToGraphCollater(
+        cutoff=config["model"]["radial_cutoff"],
+        noise_std=config["data"]["noise_std"],
+        properties_predictor=sevennet_predictor,
+        forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
+        num_agg=config["training"]["num_agg"],
+    )
+    val_dataloader.collate_fn = AtomsToGraphCollater(
+        cutoff=config["model"]["radial_cutoff"],
+        noise_std=config["data"]["noise_std"],
+        properties_predictor=sevennet_predictor,
+        forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
+        num_agg=config["training"]["num_agg"],
+    )
+
+    # Initialize the neural network
+    net = SimplePeriodicNetwork(
+        irreps_in=config["model"]["irreps_in"],
+        irreps_out=config["model"]["irreps_out"],
+        max_radius=config["model"]["radial_cutoff"],
+        num_neighbors=config["model"]["num_neighbors"],
+        pool_nodes=config["model"]["pool_nodes"],
+    )
+
+    train(net, train_dataloader, val_dataloader, config)
+
+if __name__ == "__main__":
+    main()
