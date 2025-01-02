@@ -13,9 +13,9 @@ import torch.nn.functional as F
 from sklearn.metrics import r2_score
 from tqdm import tqdm
 import wandb
+from copy import deepcopy
 
-
-def train_epoch(model, train_dataloader, optimizer, criterion, device):
+def train_epoch(model, train_dataloader, optimizer, criterion, device, num_agg, predict_importance):
     """
     Train the model for one epoch.
     """
@@ -26,26 +26,32 @@ def train_epoch(model, train_dataloader, optimizer, criterion, device):
 
     y_true, y_pred = [], []
 
-    for data in tqdm(train_dataloader):
+    for data, num_atoms in tqdm(train_dataloader):
         optimizer.zero_grad()
+
+        data = data.to(device)
+        outputs = model(data)
+        prev_index = 0
         loss = 0.0
-        num_samples += len(data)
+        num_samples += len(num_atoms)
 
-        for structures_batch in data:
-            structures_batch = structures_batch.to(device)
-            outputs = model(structures_batch)
-            predictions, importances = outputs[:, 0], outputs[:, 1]
-            num_aggregated_structures = len(structures_batch)
+        for i in range(len(num_atoms)):
+            output_structures = outputs[prev_index:prev_index + num_atoms[i] * num_agg]
+            prev_index += num_atoms[i] * num_agg
+            if predict_importance:
+                output_structures = output_structures.reshape(num_agg, num_atoms[i], 2)
+                predictions, importances = output_structures[:, 0], output_structures[:, 1]
+                importances = importances.reshape(num_agg, -1)
+                predictions = predictions.reshape(num_agg, -1)
+                importances = F.softmax(importances, dim=0)
+                final_prediction = (importances * predictions).mean()
+            else:
+                final_prediction = outputs.mean()
 
-            importances = importances.reshape(num_aggregated_structures, -1)
-            predictions = predictions.reshape(num_aggregated_structures, -1)
-            importances = F.softmax(importances, dim=0)
+            loss += criterion(final_prediction, data["target"][0])
 
-            final_prediction = (importances * predictions).sum()
-            loss += criterion(final_prediction, structures_batch["target"][0])
-
-            y_true.append(structures_batch["target"][0].unsqueeze(0))
-            y_pred.append(final_prediction.unsqueeze(0))
+            y_true.append(data["target"][0].unsqueeze(0))
+            y_pred.append(final_prediction.unsqueeze(0)) 
 
         loss.backward()
         optimizer.step()
@@ -61,7 +67,7 @@ def train_epoch(model, train_dataloader, optimizer, criterion, device):
     return avg_train_loss, r2
 
 
-def validate_epoch(model, val_dataloader, criterion, device):
+def validate_epoch(model, val_dataloader, criterion, device, num_agg, predict_importance):
     """
     Validate the model for one epoch.
     """
@@ -72,25 +78,29 @@ def validate_epoch(model, val_dataloader, criterion, device):
 
     y_true, y_pred = [], []
 
-    for data in tqdm(val_dataloader):
+    for data, num_atoms in tqdm(val_dataloader):
+        data = data.to(device)
+        outputs = model(data)
+        prev_index = 0
         loss = 0.0
-        num_samples += len(data)
+        num_samples += len(num_atoms)
 
-        for structures_batch in data:
-            structures_batch = structures_batch.to(device)
-            outputs = model(structures_batch)
-            predictions, importances = outputs[:, 0], outputs[:, 1]
-            num_aggregated_structures = len(structures_batch)
+        for i in range(len(num_atoms)):
+            output_structures = outputs[prev_index:prev_index + num_atoms[i] * num_agg]
+            prev_index += num_atoms[i] * num_agg
+            if predict_importance:
+                output_structures = output_structures.reshape(num_agg, num_atoms[i], 2)
+                predictions, importances = output_structures[:, 0], output_structures[:, 1]
+                importances = importances.reshape(num_agg, -1)
+                predictions = predictions.reshape(num_agg, -1)
+                importances = F.softmax(importances, dim=0)
+                final_prediction = (importances * predictions).mean()
+            else:
+                final_prediction = outputs.mean()
 
-            importances = importances.reshape(num_aggregated_structures, -1)
-            predictions = predictions.reshape(num_aggregated_structures, -1)
-            importances = F.softmax(importances, dim=0)
-
-            final_prediction = (importances * predictions).sum()
-            loss += criterion(final_prediction, structures_batch["target"][0])
-
-            y_true.append(structures_batch["target"][0].unsqueeze(0))
-            y_pred.append(final_prediction.unsqueeze(0))
+            loss += criterion(final_prediction, data["target"][0])
+            y_true.append(data["target"][0].unsqueeze(0))
+            y_pred.append(final_prediction.unsqueeze(0)) 
 
         total_val_loss += loss.item()
 
@@ -122,6 +132,8 @@ def train(model, train_dataloader, val_dataloader, config):
     learning_rate = config["training"]["learning_rate"]
     weight_decay = config["training"].get("weight_decay", 0)
 
+    num_agg = config["training"]["num_agg"]
+
     if optimizer_name == "Adam":
         optimizer = optim.Adam(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
@@ -141,12 +153,14 @@ def train(model, train_dataloader, val_dataloader, config):
         run_name = config["experiment_name"]
         wandb.init(entity=entity, project=project_name, name=run_name, config=config)
 
+    predict_importance = config["training"]["predict_importance"]
+
     for epoch in range(1, num_epochs + 1):
         avg_train_loss, r2_train = train_epoch(
-            model, train_dataloader, optimizer, criterion, device
+            model, train_dataloader, optimizer, criterion, device, num_agg, predict_importance
         )
         train_losses.append(avg_train_loss)
-        avg_val_loss, r2_val = validate_epoch(model, val_dataloader, criterion, device)
+        avg_val_loss, r2_val = validate_epoch(model, val_dataloader, criterion, device, num_agg, predict_importance)
         val_losses.append(avg_val_loss)
 
         if config["wandb"]["verbose"]:

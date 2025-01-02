@@ -106,6 +106,7 @@ class AtomsToGraphCollater(Collater):
         noise_std: float,
         properties_predictor,
         forces_divided_by_mass: bool,
+        shift: bool, 
         num_agg: int,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
@@ -116,6 +117,7 @@ class AtomsToGraphCollater(Collater):
         self.properties_predictor = properties_predictor
         self.forces_divided_by_mass = forces_divided_by_mass
         self.num_agg = num_agg
+        self.shift = shift
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
@@ -158,7 +160,7 @@ class AtomsToGraphCollater(Collater):
             noises.append(new_atoms)
         return batch, noises
 
-    def transit(self, mass, noise_structures_batch, forces_batch, log_diffusion) -> Any:
+    def transit(self, mass, atoms_batch, noise_structures_batch, forces_batch, log_diffusion) -> Any:
         """
         Convert noisy structures to graph data.
 
@@ -178,7 +180,7 @@ class AtomsToGraphCollater(Collater):
             .type(forces_batch[0].dtype)
         )
 
-        for noise_structures, forces in zip(noise_structures_batch, forces_batch):
+        for atoms, noise_structures, forces in zip(atoms_batch, noise_structures_batch, forces_batch):
             forces_mag = forces.norm(dim=1, keepdim=True)
             factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
             value = factor * forces
@@ -186,6 +188,11 @@ class AtomsToGraphCollater(Collater):
             edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
                 "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
             )
+
+            if self.shift:
+                shift = torch.tensor(noise_structures.get_positions() - atoms.get_positions(), 
+                                     dtype=torch.float32, device = value.device)
+                value = torch.cat((value, shift), dim=1)
 
             data = Data(
                 pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
@@ -202,7 +209,7 @@ class AtomsToGraphCollater(Collater):
 
             atoms_list.append(data)
 
-        return super().__call__(atoms_list)
+        return atoms_list
 
     def __call__(self, batch: List[Any]) -> Any:
         """
@@ -217,8 +224,10 @@ class AtomsToGraphCollater(Collater):
         atoms_batch = [data.x["atoms"] for data in batch]
         noise_structures_batch, _ = self.set_noise_to_structures(deepcopy(atoms_batch))
         data_list = []
+        num_atoms = []
 
         for data in batch:
+            num_atoms.append(len(data.x["atoms"]))
             atoms_batch = [data.x["atoms"] for _ in range(self.num_agg)]
             noise_structures_batch, _ = self.set_noise_to_structures_agg(
                 deepcopy(atoms_batch), self.num_agg
@@ -231,7 +240,7 @@ class AtomsToGraphCollater(Collater):
             log_diffusion = data.x["log_diffusion"]
 
             graphs_batch = self.transit(
-                mass, noise_structures_batch, forces_batch, log_diffusion
+                mass, atoms_batch, noise_structures_batch, forces_batch, log_diffusion
             )
-            data_list.append(graphs_batch)
-        return data_list
+            data_list.extend(graphs_batch)
+        return super().__call__(data_list), num_atoms

@@ -87,6 +87,7 @@ class SimplePeriodicNetwork(SimpleNetwork):
             torch.Tensor: Output tensor after processing through the network.
         """
         output = super().forward(data)
+
         if self.pool is True:  # Change to `is True`
             return torch_scatter.scatter_mean(
                 output, data.batch, dim=0
