@@ -18,3 +18,5 @@ mp-api==0.42.2
 e3nn==0.5.4
 sevenn==0.10.1
 wandb
+pylint
+black
