@@ -16,6 +16,7 @@ from typing import Any, List
 
 # Third-party imports
 import numpy as np
+import torch
 from torch_geometric.loader import DataLoader
 from ase.calculators.singlepoint import SinglePointCalculator
 import sevenn
@@ -74,7 +75,7 @@ class SevenNetPropertiesPredictor:
 
     def predict(self, batch: List[Any]) -> dict:
         """
-        Predicts the forces and energy for a batch of atomic structures using the pretrained 
+        Predicts the forces and energy for a batch of atomic structures using the pretrained
         SevenNet model.
 
         Args:
@@ -114,7 +115,9 @@ class SevenNetPropertiesPredictor:
 
         (sevennet_batch,) = sevennet_batch
         sevennet_batch = sevennet_batch.to(self.device)
-        sevennet_output = self.sevennet_model(sevennet_batch).detach()
+
+        with torch.enable_grad():
+            sevennet_output = self.sevennet_model(sevennet_batch).detach()
 
         forces = []
         energies = []

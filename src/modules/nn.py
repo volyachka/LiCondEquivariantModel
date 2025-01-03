@@ -19,10 +19,11 @@ import torch_scatter
 import torch
 from torch_geometric.data import Data
 
+
 class SimplePeriodicNetwork(SimpleNetwork):
     """
-    A network that adapts the SimpleNetwork class from e3nn to use a mean operation 
-    instead of summing over atom contributions per example. It also adapts the 
+    A network that adapts the SimpleNetwork class from e3nn to use a mean operation
+    instead of summing over atom contributions per example. It also adapts the
     preprocess method for periodic boundary data.
     """
 
@@ -77,7 +78,7 @@ class SimplePeriodicNetwork(SimpleNetwork):
 
     def forward(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """
-        Forward pass of the network. If `pool_nodes` is True, uses scatter_mean to 
+        Forward pass of the network. If `pool_nodes` is True, uses scatter_mean to
         aggregate the output.
 
         Args:

@@ -17,7 +17,6 @@ from src.modules.dataset import build_dataset
 from src.modules.property_prediction import SevenNetPropertiesPredictor
 
 
-
 def add_noise_and_rotate(atoms, noise_std=0.01):
     """
     Adds noise and applies random rotation and translation to the atomic positions.

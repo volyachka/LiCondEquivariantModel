@@ -36,9 +36,8 @@ def setup_cache(cache_path: Optional[str] = None) -> joblib.Memory:
         cache_path = os.getenv(CACHE_ENV_VAR, DEFAULT_CACHE_PATH)
         print(
             f'Cache path set to "{cache_path}". '
-            f'To change, set {CACHE_ENV_VAR} environment variable.'
+            f"To change, set {CACHE_ENV_VAR} environment variable."
         )
-
 
     return joblib.Memory(cache_path)
 

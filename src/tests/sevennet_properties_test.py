@@ -19,7 +19,7 @@ def test_sevennet_properties():
     Test the consistency between the SevenNet model's predicted properties (forces and energy)
     and the properties calculated by the SevenNetCalculator.
 
-    The test adds noise to atomic positions, then compares the forces and energy predicted by 
+    The test adds noise to atomic positions, then compares the forces and energy predicted by
     the SevenNet model against the values calculated by the SevenNetCalculator.
     """
     dataset = build_dataset()

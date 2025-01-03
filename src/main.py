@@ -11,7 +11,8 @@ import yaml
 from modules.dataset import AtomsToGraphCollater, build_dataloader_cv
 from modules.nn import SimplePeriodicNetwork
 from modules.property_prediction import SevenNetPropertiesPredictor
-from modules.train import train
+from modules.train import Trainer
+
 
 def load_config(config_path):
     """
@@ -55,7 +56,9 @@ def main():
         checkpoint_name = config["property_predictor"]["checkpoint"]
         sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name, device)
     else:
-        raise ValueError(f"Unsupported property predictor: {config['property_predictor']['name']}")
+        raise ValueError(
+            f"Unsupported property predictor: {config['property_predictor']['name']}"
+        )
 
     # Build dataloaders
     train_dataloader, val_dataloader = build_dataloader_cv(config)
@@ -67,7 +70,7 @@ def main():
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_agg=config["training"]["num_agg"],
-        shift = config["training"]["shift"],
+        shift=config["training"]["shift"],
     )
     val_dataloader.collate_fn = AtomsToGraphCollater(
         cutoff=config["model"]["radial_cutoff"],
@@ -75,7 +78,7 @@ def main():
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_agg=config["training"]["num_agg"],
-        shift = config["training"]["shift"],
+        shift=config["training"]["shift"],
     )
 
     if config["training"]["predict_importance"]:
@@ -84,9 +87,9 @@ def main():
         irreps_out = "1x0e"
 
     if config["training"]["shift"]:
-        irreps_in = "1x1o"
-    else:
         irreps_in = "2x1o"
+    else:
+        irreps_in = "1x1o"
 
     net = SimplePeriodicNetwork(
         irreps_in=irreps_in,
@@ -96,7 +99,10 @@ def main():
         pool_nodes=config["model"]["pool_nodes"],
     )
 
-    train(net, train_dataloader, val_dataloader, config)
+    # Create a Trainer instance and train the model
+    trainer = Trainer(net, train_dataloader, val_dataloader, config)
+    trainer.train()
+
 
 if __name__ == "__main__":
     main()
