@@ -70,15 +70,18 @@ def main():
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_agg=config["training"]["num_agg"],
-        shift=config["training"]["shift"],
+        pos_shift=config["training"]["pos_shift"],
+        energy_shift=config["training"]["energy_shift"],
     )
+
     val_dataloader.collate_fn = AtomsToGraphCollater(
         cutoff=config["model"]["radial_cutoff"],
         noise_std=config["data"]["noise_std"],
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_agg=config["training"]["num_agg"],
-        shift=config["training"]["shift"],
+        pos_shift=config["training"]["pos_shift"],
+        energy_shift=config["training"]["energy_shift"],
     )
 
     if config["training"]["predict_importance"]:
@@ -86,7 +89,7 @@ def main():
     else:
         irreps_out = "1x0e"
 
-    if config["training"]["shift"]:
+    if config["training"]["pos_shift"]:
         irreps_in = "2x1o"
     else:
         irreps_in = "1x1o"

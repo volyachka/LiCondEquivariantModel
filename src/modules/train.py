@@ -8,10 +8,11 @@ import numpy as np
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
 from scipy.stats import entropy
 import wandb
+
 
 class Trainer:
     """
@@ -40,9 +41,11 @@ class Trainer:
         self.config = config
 
         self.training_config = config["training"]
-        self.device = self.training_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self.training_config.get(
+            "device", "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.model = self.model.to(self.device)
-
+        self.pool_nodes = config["model"]["pool_nodes"]
         self.criterion = self._get_criterion(self.training_config["criterion"])
         self.optimizer = self._get_optimizer()
 
@@ -55,7 +58,7 @@ class Trainer:
                 entity=config["wandb"]["entity_name"],
                 project=config["wandb"]["project_name"],
                 name=config["experiment_name"],
-                config=config
+                config=config,
             )
 
     def _get_criterion(self, name):
@@ -71,8 +74,42 @@ class Trainer:
         weight_decay = self.training_config.get("weight_decay", 0)
 
         if optimizer_name == "Adam":
-            return optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            return optim.Adam(
+                self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
+            )
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+
+    def _thorough_validation(self, dataloader):
+        y_pred_agg = []
+        for _ in range(20):
+            preds = []
+            for data, num_atoms in tqdm(dataloader):
+                data = data.to(self.device)
+                with torch.no_grad():
+                    preds.append(self.model(data).squeeze().detach())
+            y_pred_agg.append(preds)
+
+        y_pred = (
+            torch.stack([torch.concatenate(p) for p in y_pred_agg], dim=0)
+            .mean(axis=0)
+            .cpu()
+            .detach()
+            .numpy()
+        )
+        y_true = (
+            torch.concatenate([i.target.cpu() for i, _ in dataloader])
+            .cpu()
+            .detach()
+            .numpy()
+        )
+
+        print(y_pred.shape)
+        print(y_true.shape)
+
+        val_thorough_r2 = r2_score(y_true, y_pred)
+        val_thorough_loss = mean_squared_error(y_true, y_pred)
+
+        return val_thorough_loss, val_thorough_r2
 
     def _process_batch(self, data, num_atoms, train=True):
         """Process a single batch of data."""
@@ -86,29 +123,48 @@ class Trainer:
         y_true, y_pred = [], []
         mean_entropy = []
 
-        for i, num_atom in enumerate(num_atoms):
-            cur_slice = slice(self.num_agg * i, self.num_agg * (i + 1))
-            output_structures = outputs[prev_index: prev_index + num_atom * self.num_agg]
+        if self.pool_nodes:
+            outputs = outputs.squeeze()
+            loss = self.criterion(outputs, data["target"]) * len(data)
+            y_true.append(data["target"])
+            y_pred.append(outputs)
+        else:
+            for i, num_atom in enumerate(num_atoms):
+                cur_slice = slice(self.num_agg * i, self.num_agg * (i + 1))
+                output_structures = outputs[
+                    prev_index : prev_index + num_atom * self.num_agg
+                ]
 
-            if self.predict_importance:
-                output_structures = output_structures.reshape(self.num_agg, num_atom, 2)
-                predictions, importances = output_structures[..., 0], output_structures[..., 1]
-                importances = F.softmax(importances, dim=0)
+                if self.predict_importance:
+                    output_structures = output_structures.reshape(
+                        self.num_agg, num_atom, 2
+                    )
+                    predictions, importances = (
+                        output_structures[..., 0],
+                        output_structures[..., 1],
+                    )
 
-                mean_importances = importances.mean(axis=0).cpu().detach().numpy()
-                mean_entropy.append(entropy(mean_importances))
+                    importances = importances.view(-1)
+                    predictions = predictions.view(-1)
 
-                final_prediction = (importances * predictions).mean()
-            else:
-                final_prediction = output_structures.mean()
+                    importances = F.softmax(importances, dim=0)
+                    mean_entropy.append(
+                        entropy(importances.cpu().detach().numpy())
+                        / np.log(len(importances))
+                    )
+                    final_prediction = (importances * predictions).mean()
+                else:
+                    final_prediction = output_structures.mean()
 
-            current_targets = data["target"][cur_slice]
-            assert torch.allclose(current_targets[:1], current_targets), current_targets
-            loss += self.criterion(final_prediction, current_targets[0])
+                current_targets = data["target"][cur_slice]
+                assert torch.allclose(
+                    current_targets[:1], current_targets
+                ), current_targets
+                loss += self.criterion(final_prediction, current_targets[0])
 
-            y_true.append(current_targets[0].unsqueeze(0))
-            y_pred.append(final_prediction.unsqueeze(0))
-            prev_index += num_atom * self.num_agg
+                y_true.append(current_targets[0].unsqueeze(0))
+                y_pred.append(final_prediction.unsqueeze(0))
+                prev_index += num_atom * self.num_agg
 
         if train:
             loss.backward()
@@ -172,20 +228,40 @@ class Trainer:
                         "val_loss": avg_val_loss,
                         "r2_train": r2_train,
                         "r2_val": r2_val,
-                        "entropy_train": entropy_train,
-                        "entropy_val": entropy_val,
                     }
                 )
 
-            if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
-                self._save_checkpoint(epoch)
+                if self.config["training"]["predict_importance"]:
+                    wandb.log(
+                        {"entropy_train": entropy_train, "entropy_val": entropy_val}
+                    )
+
+                if (
+                    self.config["training"]["num_agg"] == 1
+                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
+                    == 0
+                ):
+                    thorough_train_loss, thorough_train_r2 = self._thorough_validation(
+                        self.train_dataloader
+                    )
+                    thorough_val_loss, thorough_val_r2 = self._thorough_validation(
+                        self.val_dataloader
+                    )
+                    wandb.log(
+                        {
+                            "thorough_val_loss": thorough_val_loss,
+                            "thorough_val_r2": thorough_val_r2,
+                            "thorough_train_loss": thorough_train_loss,
+                            "thorough_train_r2": thorough_train_r2,
+                        }
+                    )
 
         return train_losses, val_losses
 
     def _save_checkpoint(self, epoch):
         """Save the model and optimizer state as a checkpoint."""
-        name = self.config['experiment_name']
-        output_dir = self.config['output_dir']
+        name = self.config["experiment_name"]
+        output_dir = self.config["output_dir"]
         os.makedirs(output_dir, exist_ok=True)
 
         model_path = os.path.join(output_dir, f"{name}_model_epoch_{epoch}.pt")

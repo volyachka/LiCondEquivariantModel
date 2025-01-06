@@ -106,7 +106,8 @@ class AtomsToGraphCollater(Collater):
         noise_std: float,
         properties_predictor,
         forces_divided_by_mass: bool,
-        shift: bool,
+        pos_shift: bool,
+        energy_shift: bool,
         num_agg: int,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
@@ -117,7 +118,8 @@ class AtomsToGraphCollater(Collater):
         self.properties_predictor = properties_predictor
         self.forces_divided_by_mass = forces_divided_by_mass
         self.num_agg = num_agg
-        self.shift = shift
+        self.pos_shift = pos_shift
+        self.energy_shift = energy_shift
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
@@ -161,7 +163,7 @@ class AtomsToGraphCollater(Collater):
         return batch, noises
 
     def transit(
-        self, mass, atoms_batch, noise_structures_batch, forces_batch, log_diffusion
+        self, mass, atoms_batch, noise_structures_batch, forces_batch, energy_batch, log_diffusion
     ) -> Any:
         """
         Convert noisy structures to graph data.
@@ -182,24 +184,34 @@ class AtomsToGraphCollater(Collater):
             .type(forces_batch[0].dtype)
         )
 
-        for atoms, noise_structures, forces in zip(
-            atoms_batch, noise_structures_batch, forces_batch
+        for atoms, noise_structures, forces, energy in zip(
+            atoms_batch, noise_structures_batch, forces_batch, energy_batch
         ):
-            forces_mag = forces.norm(dim=1, keepdim=True)
-            factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
-            value = factor * forces
+            
+            if self.forces_divided_by_mass:
+                forces_divided_by_mass = forces / mass[:, None]
+                forces_divided_by_mass_mag = forces_divided_by_mass.norm(dim=1, keepdim=True) 
+                factor = torch.log(1.0 + 1000.0 * forces_divided_by_mass_mag) / forces_divided_by_mass_mag 
+                value = factor * forces_divided_by_mass
+            else:
+                forces_mag = forces.norm(dim=1, keepdim=True)
+                factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
+                value = factor * forces
 
             edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
                 "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
             )
 
-            if self.shift:
+            if self.pos_shift:
                 shift = torch.tensor(
                     noise_structures.get_positions() - atoms.get_positions(),
                     dtype=torch.float32,
                     device=value.device,
                 )
                 value = torch.cat((value, shift), dim=1)
+
+            if self.energy_shift:
+                value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
             data = Data(
                 pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
@@ -239,15 +251,17 @@ class AtomsToGraphCollater(Collater):
             noise_structures_batch, _ = self.set_noise_to_structures_agg(
                 deepcopy(atoms_batch), self.num_agg
             )
-            forces_batch = self.properties_predictor.predict(noise_structures_batch)[
-                "forces"
-            ]
+
+            properites = self.properties_predictor.predict(noise_structures_batch)
+
+            forces_batch = properites["forces"]
+            energy_batch = properites["energy"]
 
             mass = data.x["atoms"].get_masses()
             log_diffusion = data.x["log_diffusion"]
 
             graphs_batch = self.transit(
-                mass, atoms_batch, noise_structures_batch, forces_batch, log_diffusion
+                mass, atoms_batch, noise_structures_batch, forces_batch, energy_batch, log_diffusion
             )
             data_list.extend(graphs_batch)
         return super().__call__(data_list), num_atoms
