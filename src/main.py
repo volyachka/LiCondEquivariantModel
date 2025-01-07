@@ -69,9 +69,9 @@ def main():
         noise_std=config["data"]["noise_std"],
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
-        num_agg=config["training"]["num_agg"],
-        pos_shift=config["training"]["pos_shift"],
-        energy_shift=config["training"]["energy_shift"],
+        num_noisy_configurations=config["training"]["num_noisy_configurations"],
+        use_displacements=config["training"]["use_displacements"],
+        use_energies=config["training"]["use_energies"],
     )
 
     val_dataloader.collate_fn = AtomsToGraphCollater(
@@ -79,27 +79,25 @@ def main():
         noise_std=config["data"]["noise_std"],
         properties_predictor=sevennet_predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
-        num_agg=config["training"]["num_agg"],
-        pos_shift=config["training"]["pos_shift"],
-        energy_shift=config["training"]["energy_shift"],
+        num_noisy_configurations=config["training"]["num_noisy_configurations"],
+        use_displacements=config["training"]["use_displacements"],
+        use_energies=config["training"]["use_energies"],
     )
 
-    if config["training"]["predict_importance"]:
-        irreps_out = "2x0e"
-    else:
-        irreps_out = "1x0e"
-
-    if config["training"]["pos_shift"]:
+    if config["training"]["use_displacements"]:
         irreps_in = "2x1o"
     else:
         irreps_in = "1x1o"
 
+    if config["training"]["use_energies"]:
+        irreps_in = irreps_in + "1x0e"
+
     net = SimplePeriodicNetwork(
         irreps_in=irreps_in,
-        irreps_out=irreps_out,
+        irreps_out="2x0e",
         max_radius=config["model"]["radial_cutoff"],
         num_neighbors=config["model"]["num_neighbors"],
-        pool_nodes=config["model"]["pool_nodes"],
+        pool_nodes=config["predict_importance"]["pool_nodes"],
     )
 
     # Create a Trainer instance and train the model

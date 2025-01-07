@@ -6,11 +6,11 @@ Handles data loading, processing, training, and evaluation.
 import os
 import numpy as np
 import torch
+import torch_scatter
 from torch import nn, optim
 import torch.nn.functional as F
 from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
-from scipy.stats import entropy
 import wandb
 
 
@@ -45,19 +45,45 @@ class Trainer:
             "device", "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.model = self.model.to(self.device)
-        self.pool_nodes = config["model"]["pool_nodes"]
+        self.pool_nodes = config["predict_importance"]["pool_nodes"]
         self.criterion = self._get_criterion(self.training_config["criterion"])
         self.optimizer = self._get_optimizer()
 
         self.num_epochs = self.training_config["num_epochs"]
-        self.num_agg = self.training_config["num_agg"]
-        self.predict_importance = self.training_config["predict_importance"]
+        self.num_noisy_configurations = self.training_config["num_noisy_configurations"]
+
+        self.softmax_within_single_structure_by_configurations = self.config["predict_importance"][
+            "softmax_within_single_structure_by_configurations"
+        ]
+        self.softmax_within_single_atom_by_configurations = self.config["predict_importance"][
+            "softmax_within_single_atom_by_configurations"
+        ]
+        self.softmax_within_configurations = self.config["predict_importance"][
+            "softmax_within_configurations"
+        ]
 
         if config["wandb"]["verbose"]:
+            tags = []
+            if self.training_config["forces_divided_by_mass"]:
+                tags.append("forces_divided_by_mass")
+            if self.training_config["use_displacements"]:
+                tags.append("use_displacements")
+            if self.training_config["use_energies"]:
+                tags.append("use_energies")
+            if self.config["predict_importance"]["pool_nodes"]:
+                tags.append("pool_nodes")
+            if self.config["predict_importance"]["softmax_within_single_structure_by_configurations"]:
+                tags.append("softmax_within_single_structure_by_configurations")
+            if self.config["predict_importance"]["softmax_within_single_atom_by_configurations"]:
+                tags.append("softmax_within_single_atom_by_configurations")
+            if self.config["predict_importance"]["softmax_within_configurations"]:
+                tags.append("softmax_within_configurations")
+                                    
             wandb.init(
                 entity=config["wandb"]["entity_name"],
                 project=config["wandb"]["project_name"],
                 name=config["experiment_name"],
+                tags=tags,
                 config=config,
             )
 
@@ -83,10 +109,15 @@ class Trainer:
         y_pred_agg = []
         for _ in range(20):
             preds = []
-            for data, num_atoms in tqdm(dataloader):
-                data = data.to(self.device)
-                with torch.no_grad():
-                    preds.append(self.model(data).squeeze().detach())
+
+            with torch.set_grad_enabled(False):
+                for data, num_atoms in tqdm(dataloader):
+                    batch_loss, batch_y_true, batch_y_pred, batch_entropy = (
+                        self._process_batch(data, num_atoms, train=train)
+                    )
+                    total_loss += batch_loss
+                    num_samples += len(num_atoms)
+                    preds.extend(batch_y_pred)
             y_pred_agg.append(preds)
 
         y_pred = (
@@ -96,15 +127,13 @@ class Trainer:
             .detach()
             .numpy()
         )
+        
         y_true = (
             torch.concatenate([i.target.cpu() for i, _ in dataloader])
             .cpu()
             .detach()
             .numpy()
         )
-
-        print(y_pred.shape)
-        print(y_true.shape)
 
         val_thorough_r2 = r2_score(y_true, y_pred)
         val_thorough_loss = mean_squared_error(y_true, y_pred)
@@ -118,59 +147,119 @@ class Trainer:
 
         data = data.to(self.device)
         outputs = self.model(data)
-        prev_index = 0
+        predictions, importances = (
+            outputs[..., 0],
+            outputs[..., 1],
+        )
         loss = 0.0
         y_true, y_pred = [], []
-        mean_entropy = []
+
+        if self.softmax_within_single_structure_by_configurations:
+            indexes = torch.arange(len(num_atoms) * self.num_noisy_configurations)
+            repeats = torch.tensor(num_atoms).repeat_interleave(self.num_noisy_configurations)
+            idx = indexes.repeat_interleave(repeats).to(self.device)
+
+            importances = torch_scatter.scatter_softmax(importances, idx, dim=0)
+            entropy = torch_scatter.scatter_sum(
+                -importances * torch.log(importances), idx, dim=0
+            )
+            normalization = (
+                torch.log(torch.tensor(num_atoms))
+                .repeat_interleave(self.num_noisy_configurations)
+                .to(self.device)
+            )
+            entropy /= normalization
+            assert entropy.shape[0] == self.num_noisy_configurations * len(data)
+            intermediate_predictions = torch_scatter.scatter_mean(
+                importances * predictions, idx, dim=0
+            )
+            idx_agg = (
+                torch.arange(len(num_atoms))
+                .repeat_interleave(self.num_noisy_configurations)
+                .to(self.device)
+            )
+            final_predictions = torch_scatter.scatter_mean(
+                intermediate_predictions, idx_agg, dim=0
+            )
+
+        if self.softmax_within_single_atom_by_configurations:
+            idx = []
+            last_idx = 0
+            for num in num_atoms:
+                idx.append(
+                    torch.arange(last_idx, last_idx + num).repeat(self.num_noisy_configurations)
+                )
+                last_idx += num
+            idx = torch.cat(idx).to(self.device)
+
+            importances = torch_scatter.scatter_softmax(importances, idx, dim=0)
+            entropy = torch_scatter.scatter_sum(
+                -importances * torch.log(importances), idx, dim=0
+            )
+            normalization = torch.log(torch.tensor(self.num_noisy_configurations, dtype = torch.float32))
+            entropy /= normalization
+            assert entropy.shape[0] == sum(num_atoms)
+            intermediate_predictions = torch_scatter.scatter_mean(
+                importances * predictions, idx, dim=0
+            )
+
+            idx_atoms = (
+                torch.arange(len(num_atoms))
+                .repeat_interleave(torch.tensor(num_atoms))
+                .to(self.device)
+            )
+            final_predictions = torch_scatter.scatter_mean(
+                intermediate_predictions, idx_atoms, dim=0
+            )
+
+        if self.softmax_within_configurations:
+            indexes = torch.arange(len(num_atoms))
+            repeats = torch.tensor(num_atoms) * self.num_noisy_configurations
+            idx = indexes.repeat_interleave(repeats).to(self.device)
+
+            importances = torch_scatter.scatter_softmax(importances, idx, dim=0)
+
+            entropy = torch_scatter.scatter_sum(
+                -importances * torch.log(importances), idx, dim=0
+            )
+            normalization = torch.log(torch.tensor(num_atoms) * self.num_noisy_configurations).to(
+                self.device
+            )
+            entropy /= normalization
+            assert entropy.shape[0] == len(num_atoms)
+            final_predictions = torch_scatter.scatter_mean(
+                importances * predictions, idx, dim=0
+            )
 
         if self.pool_nodes:
-            outputs = outputs.squeeze()
-            loss = self.criterion(outputs, data["target"]) * len(data)
-            y_true.append(data["target"])
-            y_pred.append(outputs)
-        else:
-            for i, num_atom in enumerate(num_atoms):
-                cur_slice = slice(self.num_agg * i, self.num_agg * (i + 1))
-                output_structures = outputs[
-                    prev_index : prev_index + num_atom * self.num_agg
-                ]
+            idx = (
+                torch.arange(len(num_atoms))
+                .repeat_interleave(self.num_noisy_configurations)
+                .to(self.device)
+            )
+            importances = torch_scatter.scatter_softmax(importances, idx, dim=0)
+            entropy = torch_scatter.scatter_sum(
+                -importances * torch.log(importances), idx, dim=0
+            )
 
-                if self.predict_importance:
-                    output_structures = output_structures.reshape(
-                        self.num_agg, num_atom, 2
-                    )
-                    predictions, importances = (
-                        output_structures[..., 0],
-                        output_structures[..., 1],
-                    )
+            normalization = torch.log(torch.tensor(self.num_noisy_configurations, dtype = torch.float32))
 
-                    importances = importances.view(-1)
-                    predictions = predictions.view(-1)
+            final_predictions = torch_scatter.scatter_mean(
+                importances * predictions, idx, dim=0
+            )
 
-                    importances = F.softmax(importances, dim=0)
-                    mean_entropy.append(
-                        entropy(importances.cpu().detach().numpy())
-                        / np.log(len(importances))
-                    )
-                    final_prediction = (importances * predictions).mean()
-                else:
-                    final_prediction = output_structures.mean()
+            assert entropy.shape[0] == len(data)
+            
+        y_true = data["target"][:: self.num_noisy_configurations]
+        y_pred = final_predictions.detach()
 
-                current_targets = data["target"][cur_slice]
-                assert torch.allclose(
-                    current_targets[:1], current_targets
-                ), current_targets
-                loss += self.criterion(final_prediction, current_targets[0])
-
-                y_true.append(current_targets[0].unsqueeze(0))
-                y_pred.append(final_prediction.unsqueeze(0))
-                prev_index += num_atom * self.num_agg
+        loss += self.criterion(final_predictions, y_true)
 
         if train:
             loss.backward()
             self.optimizer.step()
 
-        return loss.item(), y_true, y_pred, mean_entropy
+        return loss.item(), y_true, y_pred, entropy
 
     def _run_epoch(self, dataloader, train=True):
         """Run a single epoch of training or validation."""
@@ -179,26 +268,27 @@ class Trainer:
         total_loss = 0.0
         num_samples = 0
         y_true, y_pred = [], []
-        mean_entropy = []
+        entropy = []
 
         with torch.set_grad_enabled(train):
             for data, num_atoms in tqdm(dataloader):
-                batch_loss, batch_y_true, batch_y_pred, batch_mean_entropy = (
+                batch_loss, batch_y_true, batch_y_pred, batch_entropy = (
                     self._process_batch(data, num_atoms, train=train)
                 )
                 total_loss += batch_loss
                 num_samples += len(num_atoms)
                 y_true.extend(batch_y_true)
                 y_pred.extend(batch_y_pred)
-                mean_entropy.extend(batch_mean_entropy)
+                entropy.extend(batch_entropy)
 
-        y_true = torch.cat(y_true).cpu().detach().numpy()
-        y_pred = torch.cat(y_pred).cpu().detach().numpy()
+        y_true = torch.stack(y_true).cpu().detach().numpy()
+        y_pred = torch.stack(y_pred).cpu().detach().numpy()
+        entropy = torch.stack(entropy).cpu().detach().numpy()
 
         r2 = r2_score(y_true, y_pred)
         avg_loss = total_loss / num_samples
 
-        return avg_loss, r2, np.array(mean_entropy).mean()
+        return avg_loss, r2, entropy.mean()
 
     def train_epoch(self):
         """Train for one epoch."""
@@ -228,16 +318,13 @@ class Trainer:
                         "val_loss": avg_val_loss,
                         "r2_train": r2_train,
                         "r2_val": r2_val,
+                        "entropy_train": entropy_train,
+                        "entropy_train": entropy_val,
                     }
                 )
 
-                if self.config["training"]["predict_importance"]:
-                    wandb.log(
-                        {"entropy_train": entropy_train, "entropy_val": entropy_val}
-                    )
-
                 if (
-                    self.config["training"]["num_agg"] == 1
+                    self.config["training"]["num_noisy_configurations"] == 1
                     and epoch % self.training_config.get("save_model_every_n_epochs", 1)
                     == 0
                 ):

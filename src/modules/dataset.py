@@ -106,9 +106,9 @@ class AtomsToGraphCollater(Collater):
         noise_std: float,
         properties_predictor,
         forces_divided_by_mass: bool,
-        pos_shift: bool,
-        energy_shift: bool,
-        num_agg: int,
+        use_displacements: bool,
+        use_energies: bool,
+        num_noisy_configurations: int,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -117,9 +117,9 @@ class AtomsToGraphCollater(Collater):
         self.noise_std = noise_std
         self.properties_predictor = properties_predictor
         self.forces_divided_by_mass = forces_divided_by_mass
-        self.num_agg = num_agg
-        self.pos_shift = pos_shift
-        self.energy_shift = energy_shift
+        self.num_noisy_configurations = num_noisy_configurations
+        self.use_displacements = use_displacements
+        self.use_energies = use_energies
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
@@ -139,27 +139,29 @@ class AtomsToGraphCollater(Collater):
             noises.append(noise)
         return batch, noises
 
-    def set_noise_to_structures_agg(self, batch: List[Any], num_agg: int) -> Any:
+    def set_noise_to_structures_agg(self, batch: List[Any], num_noisy_configurations: int) -> Any:
         """
         Add noise to atomic structures for aggregation.
 
         Args:
             batch (list): List of atomic structures.
-            num_agg (int): Number of aggregated noisy structures to create.
+            num_noisy_configurations (int): Number of aggregated noisy structures to create.
 
         Returns:
             tuple: Updated batch and applied noises.
         """
         noises = []
         for atoms in batch:
-            for _ in range(num_agg):
+            for _ in range(num_noisy_configurations):
                 new_atoms = deepcopy(atoms)
                 positions = new_atoms.get_positions()
                 noise = np.random.normal(
                     loc=0, scale=self.noise_std, size=positions.shape
                 )
                 new_atoms.set_positions(positions + noise)
-            noises.append(new_atoms)
+                noises.append(new_atoms)
+
+        assert num_noisy_configurations * len(batch) == len(noises)
         return batch, noises
 
     def transit(
@@ -202,7 +204,7 @@ class AtomsToGraphCollater(Collater):
                 "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
             )
 
-            if self.pos_shift:
+            if self.use_displacements:
                 shift = torch.tensor(
                     noise_structures.get_positions() - atoms.get_positions(),
                     dtype=torch.float32,
@@ -210,7 +212,7 @@ class AtomsToGraphCollater(Collater):
                 )
                 value = torch.cat((value, shift), dim=1)
 
-            if self.energy_shift:
+            if self.use_energies:
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
             data = Data(
@@ -241,22 +243,21 @@ class AtomsToGraphCollater(Collater):
             list: List of processed graph data.
         """
         atoms_batch = [data.x["atoms"] for data in batch]
-        noise_structures_batch, _ = self.set_noise_to_structures(deepcopy(atoms_batch))
         data_list = []
         num_atoms = []
 
         for data in batch:
             num_atoms.append(len(data.x["atoms"]))
-            atoms_batch = [data.x["atoms"] for _ in range(self.num_agg)]
-            noise_structures_batch, _ = self.set_noise_to_structures_agg(
-                deepcopy(atoms_batch), self.num_agg
+            atoms_batch = [data.x["atoms"] for _ in range(self.num_noisy_configurations)]
+            atoms_batch, noise_structures_batch = self.set_noise_to_structures_agg(
+                deepcopy(atoms_batch), self.num_noisy_configurations
             )
 
             properites = self.properties_predictor.predict(noise_structures_batch)
+            properties_equilibrium_structure = self.properties_predictor.predict(atoms_batch)
 
             forces_batch = properites["forces"]
-            energy_batch = properites["energy"]
-
+            energy_batch = [energy_noise - energy_equilibrium for energy_noise, energy_equilibrium in zip(properites["energy"], properties_equilibrium_structure["energy"])]
             mass = data.x["atoms"].get_masses()
             log_diffusion = data.x["log_diffusion"]
 

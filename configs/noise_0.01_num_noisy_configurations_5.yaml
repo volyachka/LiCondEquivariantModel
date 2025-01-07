@@ -1,13 +1,14 @@
 # General settings
-experiment_name: " debug"
+experiment_name: "noise_0.01_num_noisy_configurations_5"
+comment: "structures aggregation small noise"
 output_dir: "saved_models"  
 # Data configuration
 data:
   data_path: "data/sevennet_slopes.csv"
   target_column: "v1_Li_slope"
   temperature: 1000
-  noise_std: 0.01
-  batch_size: 3
+  noise_std: 0.01 
+  batch_size: 10
   num_workers: 4  
   test_size: 0.2
   random_state: 42
@@ -16,27 +17,31 @@ data:
 model:
   radial_cutoff: 5
   num_neighbors: 50
-  pool_nodes: False
 
 # Training hyperparameters
 training:
   learning_rate: 0.001
-  num_agg: 3
+  num_noisy_configurations: 5
   optimizer: "Adam"  
   criterion: "MSELoss"  
   num_epochs: 500
   device: "cuda:0"
-  verbose: False
-  save_model_every_n_epochs: 20
+  save_model_every_n_epochs: 5
   forces_divided_by_mass: True
-  shift: True
-  predict_importance: False
+  use_displacements: False
+  use_energies: False
   
+predict_importance:
+  softmax_within_single_structure_by_configurations: False
+  softmax_within_single_atom_by_configurations: False
+  softmax_within_configurations: True
+  pool_nodes: False
+
 property_predictor:
   name: "sevennet"
   checkpoint: "7net-0"
   
 wandb:
-  verbose: False
+  verbose: True
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
