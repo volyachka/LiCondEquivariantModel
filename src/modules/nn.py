@@ -36,13 +36,15 @@ class SimplePeriodicNetwork(SimpleNetwork):
                 - 'pool_nodes' determines whether to sum atom contributions or take the mean.
                 - 'num_nodes' is set to 1.0 for each example.
         """
-        self.pool = False
-        if kwargs["pool_nodes"] is True:  # Change to `is True`
-            kwargs["pool_nodes"] = False
-            kwargs["num_nodes"] = 1.0
-            self.pool = True
-        else:
-            kwargs["num_nodes"] = 1.0
+        # self.pool = False
+        # if kwargs["pool_nodes"] is True:  # Change to `is True`
+        #     kwargs["pool_nodes"] = False
+        #     kwargs["num_nodes"] = 1.0
+        #     self.pool = True
+        # else:
+        #     kwargs["num_nodes"] = 1.0
+        kwargs["pool_nodes"] = False
+        kwargs["num_nodes"] = 1.0
         super().__init__(**kwargs)
 
     def preprocess(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
@@ -89,8 +91,8 @@ class SimplePeriodicNetwork(SimpleNetwork):
         """
         output = super().forward(data)
 
-        if self.pool is True:  # Change to `is True`
-            return torch_scatter.scatter_mean(
-                output, data.batch, dim=0
-            )  # Take mean over atoms per example
+        # if self.pool is True:  # Change to `is True`
+        #     return torch_scatter.scatter_mean(
+        #         output, data.batch, dim=0
+        #     )  # Take mean over atoms per example
         return output

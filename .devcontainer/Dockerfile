@@ -15,8 +15,8 @@ RUN groupadd --gid `cat .tmp_gid` $USERNAME \
 WORKDIR /tmp
 USER $USERNAME
 RUN python3 -m pip install jupyter ipykernel
-RUN python3 -m pip install torch
-RUN python3 -m pip install torch_scatter torch_cluster
+RUN python3 -m pip install torch==2.5.1
+RUN python3 -m pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
 
 COPY requirements.txt requirements.txt
 RUN python3 -m pip install -r requirements.txt

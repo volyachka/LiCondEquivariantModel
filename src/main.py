@@ -8,7 +8,11 @@ import argparse
 import torch
 import yaml
 
-from modules.dataset import AtomsToGraphCollater, build_dataloader_cv
+from modules.dataset import (
+    AtomsToGraphCollater,
+    build_dataloader_cv,
+)
+
 from modules.nn import SimplePeriodicNetwork
 from modules.property_prediction import SevenNetPropertiesPredictor
 from modules.train import Trainer
@@ -54,7 +58,10 @@ def main():
 
     if config["property_predictor"]["name"].lower() == "sevennet":
         checkpoint_name = config["property_predictor"]["checkpoint"]
-        sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name, device)
+        batch_size = config["property_predictor"]["batch_size"]
+        sevennet_predictor = SevenNetPropertiesPredictor(
+            checkpoint_name, batch_size, device
+        )
     else:
         raise ValueError(
             f"Unsupported property predictor: {config['property_predictor']['name']}"
@@ -92,12 +99,16 @@ def main():
     if config["training"]["use_energies"]:
         irreps_in = irreps_in + "1x0e"
 
+    if config["model"]["predict_importance"]:
+        irreps_out = "2x0e"
+    else:
+        irreps_out = "1x0e"
+
     net = SimplePeriodicNetwork(
         irreps_in=irreps_in,
-        irreps_out="2x0e",
+        irreps_out=irreps_out,
         max_radius=config["model"]["radial_cutoff"],
         num_neighbors=config["model"]["num_neighbors"],
-        pool_nodes=config["predict_importance"]["pool_nodes"],
     )
 
     # Create a Trainer instance and train the model

@@ -22,7 +22,6 @@ from pymatgen.io.ase import AseAtomsAdaptor
 # First-party imports
 from modules.utils import query_mpid_structure
 
-
 def build_dataloader_cv(config):
     """
     Build dataloaders for cross-validation.
@@ -133,13 +132,16 @@ class AtomsToGraphCollater(Collater):
         """
         noises = []
         for atoms in batch:
-            positions = atoms.get_positions()
+            new_atoms = deepcopy(atoms)
+            positions = new_atoms.get_positions()
             noise = np.random.normal(loc=0, scale=self.noise_std, size=positions.shape)
-            atoms.set_positions(positions + noise)
-            noises.append(noise)
+            new_atoms.set_positions(positions + noise)
+            noises.append(new_atoms)
         return batch, noises
 
-    def set_noise_to_structures_agg(self, batch: List[Any], num_noisy_configurations: int) -> Any:
+    def set_noise_to_structures_agg(
+        self, batch: List[Any], num_noisy_configurations: int
+    ) -> Any:
         """
         Add noise to atomic structures for aggregation.
 
@@ -165,7 +167,13 @@ class AtomsToGraphCollater(Collater):
         return batch, noises
 
     def transit(
-        self, mass, atoms_batch, noise_structures_batch, forces_batch, energy_batch, log_diffusion
+        self,
+        masses_batch,
+        atoms_batch,
+        noise_structures_batch,
+        forces_batch,
+        energy_batch,
+        log_diffusion_batch,
     ) -> Any:
         """
         Convert noisy structures to graph data.
@@ -180,20 +188,31 @@ class AtomsToGraphCollater(Collater):
             list: List of graph data objects.
         """
         atoms_list = []
-        mass = (
-            torch.from_numpy(mass)
-            .to(forces_batch[0].device)
-            .type(forces_batch[0].dtype)
-        )
 
-        for atoms, noise_structures, forces, energy in zip(
-            atoms_batch, noise_structures_batch, forces_batch, energy_batch
+        for mass, atoms, noise_structures, forces, energy, log_diffusion in zip(
+            masses_batch,
+            atoms_batch,
+            noise_structures_batch,
+            forces_batch,
+            energy_batch,
+            log_diffusion_batch,
+            strict=True,
         ):
-            
+            mass = (
+                torch.from_numpy(mass)
+                .to(forces_batch[0].device)
+                .type(forces_batch[0].dtype)
+            )
+
             if self.forces_divided_by_mass:
                 forces_divided_by_mass = forces / mass[:, None]
-                forces_divided_by_mass_mag = forces_divided_by_mass.norm(dim=1, keepdim=True) 
-                factor = torch.log(1.0 + 1000.0 * forces_divided_by_mass_mag) / forces_divided_by_mass_mag 
+                forces_divided_by_mass_mag = forces_divided_by_mass.norm(
+                    dim=1, keepdim=True
+                )
+                factor = (
+                    torch.log(1.0 + 1000.0 * forces_divided_by_mass_mag)
+                    / forces_divided_by_mass_mag
+                )
                 value = factor * forces_divided_by_mass
             else:
                 forces_mag = forces.norm(dim=1, keepdim=True)
@@ -242,27 +261,50 @@ class AtomsToGraphCollater(Collater):
         Returns:
             list: List of processed graph data.
         """
-        atoms_batch = [data.x["atoms"] for data in batch]
-        data_list = []
+
+        masses_batch = []
+        log_diffusion_batch = []
+        atoms_batch = []
         num_atoms = []
 
         for data in batch:
+            masses_batch.extend(
+                self.num_noisy_configurations * [data.x["atoms"].get_masses()]
+            )
+            log_diffusion_batch.extend(
+                self.num_noisy_configurations * [data.x["log_diffusion"]]
+            )
+            atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
             num_atoms.append(len(data.x["atoms"]))
-            atoms_batch = [data.x["atoms"] for _ in range(self.num_noisy_configurations)]
-            atoms_batch, noise_structures_batch = self.set_noise_to_structures_agg(
-                deepcopy(atoms_batch), self.num_noisy_configurations
-            )
 
+        atoms_batch, noise_structures_batch = self.set_noise_to_structures(
+            deepcopy(atoms_batch)
+        )
+
+        with torch.enable_grad():
             properites = self.properties_predictor.predict(noise_structures_batch)
-            properties_equilibrium_structure = self.properties_predictor.predict(atoms_batch)
 
-            forces_batch = properites["forces"]
-            energy_batch = [energy_noise - energy_equilibrium for energy_noise, energy_equilibrium in zip(properites["energy"], properties_equilibrium_structure["energy"])]
-            mass = data.x["atoms"].get_masses()
-            log_diffusion = data.x["log_diffusion"]
+        forces_batch = properites["forces"]
+        energy_batch = properites["energy"]
 
-            graphs_batch = self.transit(
-                mass, atoms_batch, noise_structures_batch, forces_batch, energy_batch, log_diffusion
-            )
-            data_list.extend(graphs_batch)
-        return super().__call__(data_list), num_atoms
+        if self.use_energies:
+            energy_equilibrium_batch = self.properties_predictor.predict(atoms_batch)[
+                "energy"
+            ]
+            energy_batch = [
+                energy - energy_equilibrium
+                for energy, energy_equilibrium in zip(
+                    energy_batch, energy_equilibrium_batch, strict=True
+                )
+            ]
+
+        graphs_batch = self.transit(
+            masses_batch,
+            atoms_batch,
+            noise_structures_batch,
+            forces_batch,
+            energy_batch,
+            log_diffusion_batch,
+        )
+
+        return super().__call__(graphs_batch), num_atoms

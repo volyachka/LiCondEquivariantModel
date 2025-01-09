@@ -57,7 +57,7 @@ class SevenNetPropertiesPredictor:
         predict: Makes predictions for forces and energy based on a batch of atomic structures.
     """
 
-    def __init__(self, config_name: str, device: str) -> None:
+    def __init__(self, config_name: str, batch_size: int, device: str) -> None:
         """
         Initializes the `SevenNetPropertiesPredictor` with the specified configuration name
         and device.
@@ -69,6 +69,7 @@ class SevenNetPropertiesPredictor:
         checkpoint = sevenn.util.pretrained_name_to_path(config_name)
         sevennet_model, sevennet_config = sevenn.util.model_from_checkpoint(checkpoint)
 
+        self.batch_size = batch_size
         self.device = device
         self.sevennet_model = sevennet_model
         self.sevennet_config = sevennet_config
@@ -88,10 +89,10 @@ class SevenNetPropertiesPredictor:
         """
         self.sevennet_model = self.sevennet_model.to(self.device)
         atoms_list = []
-        atoms_len = []
+        num_atoms_per_structure = []
         for atoms in batch:
             atoms_list.append(assign_dummy_y(atoms))
-            atoms_len.append(atoms.get_positions().shape[0])
+            num_atoms_per_structure.append(atoms.get_positions().shape[0])
 
         atoms_list = _set_atoms_y(atoms_list)
 
@@ -109,30 +110,24 @@ class SevenNetPropertiesPredictor:
         sevennet_inference_set.toggle_requires_grad_of_data(sevenn._keys.POS, True)
         sevennet_infer_list = sevennet_inference_set.to_list()
 
-        sevennet_batch = DataLoader(
-            sevennet_infer_list, batch_size=len(sevennet_infer_list), shuffle=False
+
+        sevennet_data = DataLoader(
+            sevennet_infer_list, batch_size=self.batch_size, shuffle=False
         )
-
-        (sevennet_batch,) = sevennet_batch
-        sevennet_batch = sevennet_batch.to(self.device)
-
-        with torch.enable_grad():
-            sevennet_output = self.sevennet_model(sevennet_batch).detach()
 
         forces = []
         energies = []
-        total_lenn = 0
 
-        for index, lenn in enumerate(atoms_len):
-            forces.append(
-                sevennet_output.inferred_force[total_lenn : total_lenn + lenn, :]
-                .clone()
-                .detach()
-            )
-            energies.append(
-                sevennet_output.inferred_total_energy[index].clone().detach()
-            )
-            total_lenn += lenn
+        for sevennet_batch in sevennet_data:
+            sevennet_batch = sevennet_batch.to(self.device)
+            sevennet_output = self.sevennet_model(sevennet_batch)
+            forces.append(sevennet_output.inferred_force.detach())
+            energies.append(sevennet_output.inferred_total_energy.detach())
+
+        energies = list(torch.split(torch.cat(energies), 1))
+        forces = list(torch.split(torch.cat(forces), num_atoms_per_structure, dim=0))
+        assert len(forces) == len(energies) == len(num_atoms_per_structure)
+        assert type(forces) == type(energies) == type([])
 
         return {
             "forces": forces,

@@ -1,6 +1,6 @@
 # General settings
-experiment_name: "noise_0.01_num_noisy_configurations_5"
-comment: "structures aggregation small noise"
+experiment_name: "noise_0.01_num_noisy_configurations_20"
+comment: "structures aggregation bigger number of configurations"
 output_dir: "saved_models"  
 # Data configuration
 data:
@@ -17,12 +17,13 @@ data:
 model:
   radial_cutoff: 5
   num_neighbors: 50
+  predict_importance: True
 
 # Training hyperparameters
 training:
   learning_rate: 0.001
   num_noisy_configurations: 20
-  optimizer: "Adam"  
+  optimizer: "Adam"
   criterion: "MSELoss"  
   num_epochs: 500
   device: "cuda:0"
@@ -30,18 +31,17 @@ training:
   forces_divided_by_mass: True
   use_displacements: False
   use_energies: False
-  
-predict_importance:
   softmax_within_single_structure_by_configurations: False
   softmax_within_single_atom_by_configurations: False
   softmax_within_configurations: True
-  pool_nodes: False
 
 property_predictor:
   name: "sevennet"
   checkpoint: "7net-0"
+  batch_size: 50
   
 wandb:
   verbose: True
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
+
