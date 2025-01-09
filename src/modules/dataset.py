@@ -17,8 +17,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.loader.dataloader import Collater
 from tqdm import tqdm
 import ase.io
-from pymatgen.io.ase import AseAtomsAdaptor
-
+from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
 # First-party imports
 from modules.utils import query_mpid_structure
 
@@ -138,55 +137,20 @@ class AtomsToGraphCollater(Collater):
             noise = np.random.normal(loc=0, scale=self.noise_std, size=positions.shape)
             new_atoms.set_positions(positions + noise)
             noises.append(new_atoms)
-        return batch, noises
-
-    def set_noise_to_structures_agg(
-        self, batch: List[Any], num_noisy_configurations: int
-    ) -> Any:
-        """
-        Add noise to atomic structures for aggregation.
-
-        Args:
-            batch (list): List of atomic structures.
-            num_noisy_configurations (int): Number of aggregated noisy structures to create.
-
-        Returns:
-            tuple: Updated batch and applied noises.
-        """
-        noises = []
-        for atoms in batch:
-            for _ in range(num_noisy_configurations):
-                new_atoms = deepcopy(atoms)
-                positions = new_atoms.get_positions()
-                noise = np.random.normal(
-                    loc=0, scale=self.noise_std, size=positions.shape
-                )
-                new_atoms.set_positions(positions + noise)
-                noises.append(new_atoms)
-
-        assert num_noisy_configurations * len(batch) == len(noises)
-        return batch, noises
+        return noises
 
     def transit(
         self,
-        masses_batch,
-        atoms_batch,
-        noise_structures_batch,
-        forces_batch,
-        energy_batch,
-        log_diffusion_batch,
-    ) -> Any:
+        masses_batch: list[np.ndarray],
+        atoms_batch: list[MSONAtoms],
+        noise_structures_batch: list[MSONAtoms],
+        forces_batch: list[torch.Tensor],
+        energy_batch: list[torch.Tensor],
+        log_diffusion_batch: list[float],
+    ) -> list[Data]:
+
         """
         Convert noisy structures to graph data.
-
-        Args:
-            mass (numpy.ndarray): Masses of atoms.
-            noise_structures_batch (list): List of noisy atomic structures.
-            forces_batch (list): List of forces for each structure.
-            log_diffusion (float): Target property value.
-
-        Returns:
-            list: List of graph data objects.
         """
         atoms_list = []
 
@@ -278,8 +242,8 @@ class AtomsToGraphCollater(Collater):
             atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
             num_atoms.append(len(data.x["atoms"]))
 
-        atoms_batch, noise_structures_batch = self.set_noise_to_structures(
-            deepcopy(atoms_batch)
+        noise_structures_batch = self.set_noise_to_structures(
+            atoms_batch
         )
 
         with torch.enable_grad():
@@ -289,9 +253,13 @@ class AtomsToGraphCollater(Collater):
         energy_batch = properites["energy"]
 
         if self.use_energies:
-            energy_equilibrium_batch = self.properties_predictor.predict(atoms_batch)[
+            equilibrium_structures_batch = list(data.x["atoms"] for data in batch)
+            energy_equilibrium_batch = self.properties_predictor.predict(equilibrium_structures_batch)[
                 "energy"
             ]
+
+            energy_equilibrium_batch = torch.Tensor(energy_equilibrium_batch).repeat_interleave(self.num_noisy_configurations)
+            
             energy_batch = [
                 energy - energy_equilibrium
                 for energy, energy_equilibrium in zip(

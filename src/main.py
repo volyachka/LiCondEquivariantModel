@@ -97,7 +97,7 @@ def main():
         irreps_in = "1x1o"
 
     if config["training"]["use_energies"]:
-        irreps_in = irreps_in + "1x0e"
+        irreps_in = irreps_in + "+1x0e"
 
     if config["model"]["predict_importance"]:
         irreps_out = "2x0e"
