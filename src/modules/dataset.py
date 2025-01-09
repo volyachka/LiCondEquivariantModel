@@ -22,6 +22,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 # First-party imports
 from modules.utils import query_mpid_structure
 
+
 def build_dataloader_cv(config):
     """
     Build dataloaders for cross-validation.

@@ -110,7 +110,6 @@ class SevenNetPropertiesPredictor:
         sevennet_inference_set.toggle_requires_grad_of_data(sevenn._keys.POS, True)
         sevennet_infer_list = sevennet_inference_set.to_list()
 
-
         sevennet_data = DataLoader(
             sevennet_infer_list, batch_size=self.batch_size, shuffle=False
         )
