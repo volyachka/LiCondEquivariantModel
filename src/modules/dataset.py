@@ -18,6 +18,7 @@ from torch_geometric.loader.dataloader import Collater
 from tqdm import tqdm
 import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
+
 # First-party imports
 from modules.utils import query_mpid_structure
 
@@ -99,8 +100,9 @@ class AtomsToGraphCollater(Collater):
     Collater to convert atomic structures into graph representations.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=R0913
         self,
+        *,
         cutoff: float,
         noise_std: float,
         properties_predictor,
@@ -139,8 +141,9 @@ class AtomsToGraphCollater(Collater):
             noises.append(new_atoms)
         return noises
 
-    def transit(
+    def transit(  # pylint: disable=R0913, R0914
         self,
+        *,
         masses_batch: list[np.ndarray],
         atoms_batch: list[MSONAtoms],
         noise_structures_batch: list[MSONAtoms],
@@ -148,7 +151,6 @@ class AtomsToGraphCollater(Collater):
         energy_batch: list[torch.Tensor],
         log_diffusion_batch: list[float],
     ) -> list[Data]:
-
         """
         Convert noisy structures to graph data.
         """
@@ -242,9 +244,7 @@ class AtomsToGraphCollater(Collater):
             atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
             num_atoms.append(len(data.x["atoms"]))
 
-        noise_structures_batch = self.set_noise_to_structures(
-            atoms_batch
-        )
+        noise_structures_batch = self.set_noise_to_structures(atoms_batch)
 
         with torch.enable_grad():
             properites = self.properties_predictor.predict(noise_structures_batch)
@@ -254,12 +254,14 @@ class AtomsToGraphCollater(Collater):
 
         if self.use_energies:
             equilibrium_structures_batch = list(data.x["atoms"] for data in batch)
-            energy_equilibrium_batch = self.properties_predictor.predict(equilibrium_structures_batch)[
-                "energy"
-            ]
+            energy_equilibrium_batch = self.properties_predictor.predict(
+                equilibrium_structures_batch
+            )["energy"]
 
-            energy_equilibrium_batch = torch.Tensor(energy_equilibrium_batch).repeat_interleave(self.num_noisy_configurations)
-            
+            energy_equilibrium_batch = torch.Tensor(
+                energy_equilibrium_batch
+            ).repeat_interleave(self.num_noisy_configurations)
+
             energy_batch = [
                 energy - energy_equilibrium
                 for energy, energy_equilibrium in zip(
@@ -268,12 +270,12 @@ class AtomsToGraphCollater(Collater):
             ]
 
         graphs_batch = self.transit(
-            masses_batch,
-            atoms_batch,
-            noise_structures_batch,
-            forces_batch,
-            energy_batch,
-            log_diffusion_batch,
+            masses_batch=masses_batch,
+            atoms_batch=atoms_batch,
+            noise_structures_batch=noise_structures_batch,
+            forces_batch=forces_batch,
+            energy_batch=energy_batch,
+            log_diffusion_batch=log_diffusion_batch,
         )
 
         return super().__call__(graphs_batch), num_atoms

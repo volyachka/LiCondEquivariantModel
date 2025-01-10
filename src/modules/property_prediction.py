@@ -43,7 +43,7 @@ def assign_dummy_y(atoms):
     return calc.get_atoms()
 
 
-class SevenNetPropertiesPredictor:
+class SevenNetPropertiesPredictor:  # pylint: disable=R0903
     """
     A class that uses a pretrained SevenNet model to predict atomic properties such as forces
     and energy.
@@ -73,6 +73,7 @@ class SevenNetPropertiesPredictor:
         self.device = device
         self.sevennet_model = sevennet_model
         self.sevennet_config = sevennet_config
+        self.sevennet_model = self.sevennet_model.to(self.device)
 
     def predict(self, batch: List[Any]) -> dict:
         """
@@ -87,7 +88,6 @@ class SevenNetPropertiesPredictor:
                 - "forces": List of predicted forces for each structure.
                 - "energy": List of predicted energies for each structure.
         """
-        self.sevennet_model = self.sevennet_model.to(self.device)
         atoms_list = []
         num_atoms_per_structure = []
         for atoms in batch:
@@ -107,6 +107,7 @@ class SevenNetPropertiesPredictor:
             sevennet_data_list, self.sevennet_config["cutoff"]
         )
         sevennet_inference_set.x_to_one_hot_idx(self.sevennet_config["_type_map"])
+        # pylint: disable=W0212
         sevennet_inference_set.toggle_requires_grad_of_data(sevenn._keys.POS, True)
         sevennet_infer_list = sevennet_inference_set.to_list()
 
@@ -126,7 +127,7 @@ class SevenNetPropertiesPredictor:
         energies = list(torch.split(torch.cat(energies), 1))
         forces = list(torch.split(torch.cat(forces), num_atoms_per_structure, dim=0))
         assert len(forces) == len(energies) == len(num_atoms_per_structure)
-        assert type(forces) == type(energies) == type([])
+        assert isinstance(forces, list) and isinstance(energies, list)
 
         return {
             "forces": forces,

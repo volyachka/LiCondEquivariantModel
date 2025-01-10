@@ -1,3 +1,4 @@
+# pylint: disable=R0801
 """
 This module contains a test for validating the properties (forces and energy)
 predicted by the SevenNet model against the values computed by the SevenNetCalculator.
@@ -5,16 +6,17 @@ The test ensures that the model's predictions for forces and energy are consiste
 with the calculations from the SevenNetCalculator.
 """
 
+import torch
 import numpy as np
 from torch_geometric.loader import DataLoader
 
 from sevenn.sevennet_calculator import SevenNetCalculator
 
-from src.modules.dataset import build_dataset
-from src.modules.property_prediction import SevenNetPropertiesPredictor
+from modules.dataset import build_dataset
+from modules.property_prediction import SevenNetPropertiesPredictor
 
 
-def test_sevennet_properties():
+def test_sevennet_properties():  # pylint: disable=R0914
     """
     Test the consistency between the SevenNet model's predicted properties (forces and energy)
     and the properties calculated by the SevenNetCalculator.
@@ -22,13 +24,24 @@ def test_sevennet_properties():
     The test adds noise to atomic positions, then compares the forces and energy predicted by
     the SevenNet model against the values calculated by the SevenNetCalculator.
     """
-    dataset = build_dataset()
+    dataset = build_dataset(
+        csv_path="data/sevennet_slopes.csv",
+        li_column="v1_Li_slope",
+        temp=1000,
+        clip_value=0.0001,
+    )
 
     checkpoint_name = "7net-0"
+    batch_size = 50
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Initialize the predictor with the checkpoint
+    sevennet_predictor = SevenNetPropertiesPredictor(
+        checkpoint_name, batch_size, device
+    )
 
     # Initialize the calculators
     seven_net_calc = SevenNetCalculator(checkpoint_name, device="cpu")
-    sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name)
 
     batch_size = 10
     dataloader = DataLoader(dataset, batch_size=batch_size)

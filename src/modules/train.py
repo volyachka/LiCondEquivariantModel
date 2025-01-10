@@ -12,7 +12,7 @@ from tqdm import tqdm
 import wandb
 
 
-class Trainer:
+class Trainer:  # pylint: disable=R0902
     """
     Trainer class for managing model training and validation.
 
@@ -49,15 +49,21 @@ class Trainer:
         self.num_epochs = self.training_config["num_epochs"]
         self.num_noisy_configurations = self.training_config["num_noisy_configurations"]
 
-        self.softmax_within_single_structure_by_configurations = self.config[
-            "training"
-        ]["softmax_within_single_structure_by_configurations"]
-        self.softmax_within_single_atom_by_configurations = self.config["training"][
-            "softmax_within_single_atom_by_configurations"
+        modes = [
+            self.training_config["softmax_within_single_atom_by_configurations"],
+            self.training_config["softmax_within_single_structure_by_configurations"],
+            self.training_config["softmax_within_configurations"],
         ]
-        self.softmax_within_configurations = self.config["training"][
-            "softmax_within_configurations"
-        ]
+
+        assert sum(modes) == 1
+
+        if self.config["training"]["softmax_within_single_atom_by_configurations"]:
+            self.mode = "softmax_within_single_atom_by_configurations"
+        if self.config["training"]["softmax_within_single_structure_by_configurations"]:
+            self.mode = "softmax_within_single_structure_by_configurations"
+        if self.config["training"]["softmax_within_configurations"]:
+            self.mode = "softmax_within_configurations"
+
         self.predict_importance = self.config["model"]["predict_importance"]
 
         if config["wandb"]["verbose"]:
@@ -68,16 +74,9 @@ class Trainer:
                 tags.append("use_displacements")
             if self.training_config["use_energies"]:
                 tags.append("use_energies")
-            if self.config["training"][
-                "softmax_within_single_structure_by_configurations"
-            ]:
-                tags.append("softmax_within_single_structure_by_configurations")
-            if self.config["training"]["softmax_within_single_atom_by_configurations"]:
-                tags.append("softmax_within_single_atom_by_configurations")
-            if self.config["training"]["softmax_within_configurations"]:
-                tags.append("softmax_within_configurations")
+            tags.append(self.mode)
 
-            wandb.init(
+            self.run = wandb.init(
                 entity=config["wandb"]["entity_name"],
                 project=config["wandb"]["project_name"],
                 name=config["experiment_name"],
@@ -162,11 +161,11 @@ class Trainer:
         return indexing_atoms, indexing_noise_variations, indexing_both
 
     def _choose_index(self, indexing_atoms, indexing_noise_variations, indexing_both):
-        if self.softmax_within_single_atom_by_configurations:
+        if self.mode == "softmax_within_single_atom_by_configurations":
             return indexing_atoms
-        if self.softmax_within_single_structure_by_configurations:
+        if self.mode == "softmax_within_single_structure_by_configurations":
             return indexing_noise_variations
-        if self.softmax_within_configurations:
+        if self.mode == "softmax_within_configurations":
             return indexing_both
         raise NotImplementedError("Unknown type of aggregation")
 
@@ -184,7 +183,7 @@ class Trainer:
         entropy /= normalization
         return entropy
 
-    def _process_batch(self, data, num_atoms, train=True):
+    def _process_batch(self, data, num_atoms, train=True):  # pylint: disable=R0914
         """Process a single batch of data."""
         if train:
             self.optimizer.zero_grad()
@@ -214,6 +213,9 @@ class Trainer:
             importances = torch_scatter.scatter_softmax(
                 importances, aggregation_index, dim=0
             )
+
+            assert all(num > 1 for num in num_atoms)
+
             entropy = self._calculate_entropy(importances, aggregation_index)
         else:
             entropy = -torch.ones(len(num_atoms))
@@ -249,9 +251,12 @@ class Trainer:
 
         return loss.item(), y_true, y_pred, entropy
 
-    def _run_epoch(self, dataloader, train=True):
+    def _run_epoch(self, dataloader, train=True):  # pylint: disable=R0914
         """Run a single epoch of training or validation."""
-        self.model.train() if train else self.model.eval()
+        if train:
+            self.model.train()
+        else:
+            self.model.eval()
 
         total_loss = 0.0
         num_samples = 0
@@ -340,6 +345,9 @@ class Trainer:
                         }
                     )
 
+            if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
+                self._save_checkpoint(epoch)
+
         return train_losses, val_losses
 
     def _save_checkpoint(self, epoch):
@@ -353,3 +361,15 @@ class Trainer:
 
         torch.save(self.model.state_dict(), model_path)
         torch.save(self.optimizer.state_dict(), optimizer_path)
+
+        if self.run is not None:
+
+            artifact = wandb.Artifact(f"{name}_model_epoch_{epoch}", type="model")
+            artifact.add_file(model_path)
+            self.run.log_artifact(artifact)
+
+            artifact = wandb.Artifact(
+                f"{name}_optimizer_epoch_{epoch}", type="optimizer"
+            )
+            artifact.add_file(optimizer_path)
+            self.run.log_artifact(artifact)

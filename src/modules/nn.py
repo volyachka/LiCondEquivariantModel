@@ -15,7 +15,6 @@ from typing import Dict, Union
 
 # Third-party imports
 from e3nn.nn.models.v2103.gate_points_networks import SimpleNetwork
-import torch_scatter
 import torch
 from torch_geometric.data import Data
 
@@ -43,8 +42,8 @@ class SimplePeriodicNetwork(SimpleNetwork):
         #     self.pool = True
         # else:
         #     kwargs["num_nodes"] = 1.0
-        kwargs["pool_nodes"] = False
-        kwargs["num_nodes"] = 1.0
+        assert kwargs["pool_nodes"] is False
+        assert kwargs["num_nodes"] == 1.0
         super().__init__(**kwargs)
 
     def preprocess(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:

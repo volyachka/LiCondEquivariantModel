@@ -13,8 +13,8 @@ from e3nn import o3  # Import directly as recommended
 from tqdm import tqdm
 import torch
 
-from src.modules.dataset import build_dataset
-from src.modules.property_prediction import SevenNetPropertiesPredictor
+from modules.dataset import build_dataset
+from modules.property_prediction import SevenNetPropertiesPredictor
 
 
 def add_noise_and_rotate(atoms, noise_std=0.01):
@@ -60,9 +60,21 @@ def test_sevennet_equivariance_energies():
     invariant under random rotations and translations of atomic structures with
     added noise. It compares the energy of the original and transformed structures.
     """
-    dataset = build_dataset()
+    dataset = build_dataset(
+        csv_path="data/sevennet_slopes.csv",
+        li_column="v1_Li_slope",
+        temp=1000,
+        clip_value=0.0001,
+    )
+
     checkpoint_name = "7net-0"
-    sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name)
+    batch_size = 50
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Initialize the predictor with the checkpoint
+    sevennet_predictor = SevenNetPropertiesPredictor(
+        checkpoint_name, batch_size, device
+    )
 
     batch_size = 10
     dataloader = DataLoader(dataset, batch_size=batch_size)
@@ -86,7 +98,7 @@ def test_sevennet_equivariance_energies():
         )
 
 
-def test_sevennet_equivariance_forces():
+def test_sevennet_equivariance_forces():  # pylint: disable=R0914
     """
     Test the equivariance of force predictions under rotation and translation.
 
@@ -94,9 +106,21 @@ def test_sevennet_equivariance_forces():
     invariant under random rotations and translations of atomic structures with
     added noise. It compares the forces of the original and transformed structures.
     """
-    dataset = build_dataset()
+    dataset = build_dataset(
+        csv_path="data/sevennet_slopes.csv",
+        li_column="v1_Li_slope",
+        temp=1000,
+        clip_value=0.0001,
+    )
+
     checkpoint_name = "7net-0"
-    sevennet_predictor = SevenNetPropertiesPredictor(checkpoint_name)
+    batch_size = 50
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Initialize the predictor with the checkpoint
+    sevennet_predictor = SevenNetPropertiesPredictor(
+        checkpoint_name, batch_size, device
+    )
 
     batch_size = 10
     dataloader = DataLoader(dataset, batch_size=batch_size)

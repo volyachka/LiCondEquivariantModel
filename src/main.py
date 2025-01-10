@@ -109,6 +109,8 @@ def main():
         irreps_out=irreps_out,
         max_radius=config["model"]["radial_cutoff"],
         num_neighbors=config["model"]["num_neighbors"],
+        pool_nodes=config["model"]["pool_nodes"],
+        num_nodes=config["model"]["num_nodes"],
     )
 
     # Create a Trainer instance and train the model
