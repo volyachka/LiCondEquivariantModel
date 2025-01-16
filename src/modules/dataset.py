@@ -39,6 +39,7 @@ def build_dataloader_cv(config):
         temp=config["data"]["temperature"],
         clip_value=config["data"]["clip_value"],
     )
+
     train_indices, val_indices = train_test_split(
         np.arange(len(dataset)),
         test_size=config["data"]["test_size"],
@@ -218,7 +219,7 @@ class AtomsToGraphCollater(Collater):
 
         return atoms_list
 
-    def __call__(self, batch: List[Any]) -> Any:
+    def __call__(self, batch: List[Any]) -> Any: # pylint: disable=R0914
         """
         Process a batch of atomic data into graph data.
 
@@ -233,6 +234,10 @@ class AtomsToGraphCollater(Collater):
         log_diffusion_batch = []
         atoms_batch = []
         num_atoms = []
+
+        atoms_reference_positions = np.concatenate(
+            [data.x["atoms"].get_positions() for data in batch]
+        )
 
         for data in batch:
             masses_batch.extend(
@@ -277,5 +282,10 @@ class AtomsToGraphCollater(Collater):
             energy_batch=energy_batch,
             log_diffusion_batch=log_diffusion_batch,
         )
+
+        atoms_positions_should_be_unchanged = np.concatenate(
+            [data.x["atoms"].get_positions() for data in batch]
+        )
+        assert (atoms_reference_positions == atoms_positions_should_be_unchanged).all()
 
         return super().__call__(graphs_batch), num_atoms

@@ -306,23 +306,17 @@ class Trainer:  # pylint: disable=R0902
             val_losses.append(avg_val_loss)
 
             if self.config["wandb"]["verbose"]:
-                wandb.log(
-                    {
-                        "epoch": epoch,
-                        "train_loss": avg_train_loss,
-                        "val_loss": avg_val_loss,
-                        "r2_train": r2_train,
-                        "r2_val": r2_val,
-                    }
-                )
+                info = {
+                    "epoch": epoch,
+                    "train_loss": avg_train_loss,
+                    "val_loss": avg_val_loss,
+                    "r2_train": r2_train,
+                    "r2_val": r2_val,
+                }
 
                 if self.predict_importance:
-                    wandb.log(
-                        {
-                            "entropy_train": entropy_train,
-                            "entropy_val": entropy_val,
-                        }
-                    )
+                    info["entropy_train"] = entropy_train
+                    info["entropy_val"] = entropy_val
 
                 if (
                     self.config["training"]["num_noisy_configurations"] == 1
@@ -336,14 +330,12 @@ class Trainer:  # pylint: disable=R0902
                     thorough_val_loss, thorough_val_r2 = self._thorough_validation(
                         self.val_dataloader
                     )
-                    wandb.log(
-                        {
-                            "thorough_val_loss": thorough_val_loss,
-                            "thorough_val_r2": thorough_val_r2,
-                            "thorough_train_loss": thorough_train_loss,
-                            "thorough_train_r2": thorough_train_r2,
-                        }
-                    )
+                    info["thorough_val_loss"] = (thorough_val_loss,)
+                    info["thorough_val_r2"] = (thorough_val_r2,)
+                    info["thorough_train_loss"] = (thorough_train_loss,)
+                    info["thorough_train_r2"] = thorough_train_r2
+
+                wandb.log(info)
 
             if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
                 self._save_checkpoint(epoch)
@@ -362,14 +354,14 @@ class Trainer:  # pylint: disable=R0902
         torch.save(self.model.state_dict(), model_path)
         torch.save(self.optimizer.state_dict(), optimizer_path)
 
-        if self.run is not None:
+        # if self.run is not None:
 
-            artifact = wandb.Artifact(f"{name}_model_epoch_{epoch}", type="model")
-            artifact.add_file(model_path)
-            self.run.log_artifact(artifact)
+        #     artifact = wandb.Artifact(f"{name}_model_epoch_{epoch}", type="model")
+        #     artifact.add_file(model_path)
+        #     self.run.log_artifact(artifact)
 
-            artifact = wandb.Artifact(
-                f"{name}_optimizer_epoch_{epoch}", type="optimizer"
-            )
-            artifact.add_file(optimizer_path)
-            self.run.log_artifact(artifact)
+        #     artifact = wandb.Artifact(
+        #         f"{name}_optimizer_epoch_{epoch}", type="optimizer"
+        #     )
+        #     artifact.add_file(optimizer_path)
+        #     self.run.log_artifact(artifact)

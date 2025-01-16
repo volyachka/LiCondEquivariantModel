@@ -6,17 +6,18 @@ The test ensures that the model's predictions for forces and energy are consiste
 with the calculations from the SevenNetCalculator.
 """
 
-import torch
 import numpy as np
 from torch_geometric.loader import DataLoader
 
 from sevenn.sevennet_calculator import SevenNetCalculator
-
-from modules.dataset import build_dataset
 from modules.property_prediction import SevenNetPropertiesPredictor
 
 
-def test_sevennet_properties():  # pylint: disable=R0914
+def test_sevennet_properties(
+    sevennet_predictor: SevenNetPropertiesPredictor,
+    dataloader: DataLoader,
+    sevennet_calc: SevenNetCalculator,
+):  # pylint: disable=R0914
     """
     Test the consistency between the SevenNet model's predicted properties (forces and energy)
     and the properties calculated by the SevenNetCalculator.
@@ -24,27 +25,6 @@ def test_sevennet_properties():  # pylint: disable=R0914
     The test adds noise to atomic positions, then compares the forces and energy predicted by
     the SevenNet model against the values calculated by the SevenNetCalculator.
     """
-    dataset = build_dataset(
-        csv_path="data/sevennet_slopes.csv",
-        li_column="v1_Li_slope",
-        temp=1000,
-        clip_value=0.0001,
-    )
-
-    checkpoint_name = "7net-0"
-    batch_size = 50
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # Initialize the predictor with the checkpoint
-    sevennet_predictor = SevenNetPropertiesPredictor(
-        checkpoint_name, batch_size, device
-    )
-
-    # Initialize the calculators
-    seven_net_calc = SevenNetCalculator(checkpoint_name, device="cpu")
-
-    batch_size = 10
-    dataloader = DataLoader(dataset, batch_size=batch_size)
 
     for batch in dataloader:
         structures = batch.x["atoms"]
@@ -62,7 +42,7 @@ def test_sevennet_properties():  # pylint: disable=R0914
         for atoms, forces, energy in zip(
             structures, properties_batch["forces"], properties_batch["energy"]
         ):
-            atoms.calc = seven_net_calc
+            atoms.calc = sevennet_calc
             forces_from_calc = atoms.get_forces()
             energy_from_calc = atoms.get_potential_energy()
 
