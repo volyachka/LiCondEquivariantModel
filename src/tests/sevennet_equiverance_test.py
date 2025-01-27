@@ -52,8 +52,8 @@ def add_noise_and_rotate(atoms, noise_std=0.01):
 
 
 def test_sevennet_equivariance_energies(
-    sevennet_predictor: SevenNetPropertiesPredictor,
-    dataloader: DataLoader):
+    sevennet_predictor: SevenNetPropertiesPredictor, dataloader: DataLoader
+):
     """
     Test the equivariance of energy predictions under rotation and translation.
 
@@ -82,8 +82,8 @@ def test_sevennet_equivariance_energies(
 
 
 def test_sevennet_equivariance_forces(
-    sevennet_predictor: SevenNetPropertiesPredictor,
-    dataloader: DataLoader):  # pylint: disable=R0914
+    sevennet_predictor: SevenNetPropertiesPredictor, dataloader: DataLoader
+):  # pylint: disable=R0914
     """
     Test the equivariance of force predictions under rotation and translation.
 

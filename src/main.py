@@ -8,14 +8,15 @@ import argparse
 import torch
 import yaml
 
-from modules.dataset import (
-    AtomsToGraphCollater,
-    build_dataloader_cv,
-)
 
 from modules.nn import SimplePeriodicNetwork
-from modules.property_prediction import SevenNetPropertiesPredictor
+from modules.property_prediction import (
+    SevenNetPropertiesPredictor,
+    LennardJonesPropertiesPredictor,
+)
 from modules.train import Trainer
+
+from modules.dataset import build_dataset, build_dataloaders_from_dataset, AtomsToGraphCollater
 
 
 def load_config(config_path):
@@ -50,31 +51,42 @@ def main():
 
     config = load_config(args.config)
 
+    property_predictor_name = config["property_predictor"]["name"].lower()
+    property_config = config["property_predictor"]["property_config"]
+
     device = (
         ("cuda" if torch.cuda.is_available() else "cpu")
         if not config["training"]["device"]
         else config["training"]["device"]
     )
 
-    if config["property_predictor"]["name"].lower() == "sevennet":
-        checkpoint_name = config["property_predictor"]["checkpoint"]
-        batch_size = config["property_predictor"]["batch_size"]
-        sevennet_predictor = SevenNetPropertiesPredictor(
-            checkpoint_name, batch_size, device
-        )
-    else:
-        raise ValueError(
-            f"Unsupported property predictor: {config['property_predictor']['name']}"
-        )
+    dataset = build_dataset(
+        csv_path=config["data"]["data_path"],
+        li_column=config["data"]["target_column"],
+        temp=config["data"]["temperature"],
+        clip_value=config["data"]["clip_value"],
+        cutoff=config["model"]["radial_cutoff"],
+    )
 
+    if property_predictor_name == "sevennet":
+        predictor = SevenNetPropertiesPredictor(device, property_config)
+    elif property_predictor_name == "lennardjones":
+        predictor = LennardJonesPropertiesPredictor(device, property_config, dataset)
+    else:
+        raise NotImplementedError(f"Unsupported property_predictor: {property_predictor_name}")
     # Build dataloaders
-    train_dataloader, val_dataloader = build_dataloader_cv(config)
+    train_dataloader, val_dataloader = build_dataloaders_from_dataset(
+        dataset=dataset,
+        test_size=config["data"]["test_size"],
+        random_state=config["data"]["random_state"],
+        batch_size=config["data"]["batch_size"],
+    )
 
     # Customize collate functions for dataloaders
     train_dataloader.collate_fn = AtomsToGraphCollater(
         cutoff=config["model"]["radial_cutoff"],
         noise_std=config["data"]["noise_std"],
-        properties_predictor=sevennet_predictor,
+        properties_predictor=predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_noisy_configurations=config["training"]["num_noisy_configurations"],
         use_displacements=config["training"]["use_displacements"],
@@ -84,7 +96,7 @@ def main():
     val_dataloader.collate_fn = AtomsToGraphCollater(
         cutoff=config["model"]["radial_cutoff"],
         noise_std=config["data"]["noise_std"],
-        properties_predictor=sevennet_predictor,
+        properties_predictor=predictor,
         forces_divided_by_mass=config["training"]["forces_divided_by_mass"],
         num_noisy_configurations=config["training"]["num_noisy_configurations"],
         use_displacements=config["training"]["use_displacements"],

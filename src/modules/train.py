@@ -11,7 +11,6 @@ from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
 import wandb
 
-
 class Trainer:  # pylint: disable=R0902
     """
     Trainer class for managing model training and validation.
@@ -92,9 +91,9 @@ class Trainer:  # pylint: disable=R0902
 
     def _get_optimizer(self):
         """Return the appropriate optimizer."""
-        optimizer_name = self.training_config["optimizer"]
-        learning_rate = self.training_config["learning_rate"]
-        weight_decay = self.training_config.get("weight_decay", 0)
+        optimizer_name = self.config["optimizer"]["name"]
+        learning_rate = self.config["optimizer"]["learning_rate"]
+        weight_decay = self.config["optimizer"].get("weight_decay", 0)
 
         if optimizer_name == "Adam":
             return optim.Adam(

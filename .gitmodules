@@ -4,3 +4,6 @@
 [submodule "external_libs/SevenNet"]
 	path = external_libs/SevenNet
 	url = https://github.com/volyachka/SevenNet.git
+[submodule "external_libs/SuperionicToyMD"]
+	path = external_libs/SuperionicToyMD
+	url = https://github.com/SiLiKhon/SuperionicToyMD.git

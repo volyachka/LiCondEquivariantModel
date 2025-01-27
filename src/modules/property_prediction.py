@@ -1,28 +1,25 @@
 """
 This module defines the `SevenNetPropertiesPredictor` class, which uses a pretrained
 SevenNet model to predict properties (such as forces and energy) of atomic systems.
-It takes a batch of atomic structures and uses the SevenNet model for inference, 
-returning the predicted forces and energies.
-
-Functions:
-    assign_dummy_y: Assigns dummy property values (energy, forces, stress) to atoms.
-Classes:
-    SevenNetPropertiesPredictor: A class that handles the prediction of atomic properties 
-    using a pretrained SevenNet model.
+It also defines the `LennardJonesPropertiesPredictor` class, which uses the 
+Lennard-Jones potential for property prediction.
 """
 
 # Standard imports
 from typing import Any, List
+from copy import deepcopy
 
 # Third-party imports
 import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
+from ase.calculators.lj import LennardJones
 from ase.calculators.singlepoint import SinglePointCalculator
+
+# Local imports
 import sevenn
-from sevenn.train.dataload import graph_build
+from sevenn.train.dataload import graph_build, _set_atoms_y
 from sevenn.train.dataset import AtomGraphDataset
-from sevenn.train.dataload import _set_atoms_y
 
 
 def assign_dummy_y(atoms):
@@ -57,7 +54,7 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
         predict: Makes predictions for forces and energy based on a batch of atomic structures.
     """
 
-    def __init__(self, config_name: str, batch_size: int, device: str) -> None:
+    def __init__(self, device, predictor_config) -> None:
         """
         Initializes the `SevenNetPropertiesPredictor` with the specified configuration name
         and device.
@@ -66,10 +63,10 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
             config_name (str): The name of the pretrained model configuration.
             device (str): The device to run the model on (e.g., "cpu" or "cuda").
         """
-        checkpoint = sevenn.util.pretrained_name_to_path(config_name)
+        checkpoint = sevenn.util.pretrained_name_to_path(predictor_config["checkpoint"])
         sevennet_model, sevennet_config = sevenn.util.model_from_checkpoint(checkpoint)
 
-        self.batch_size = batch_size
+        self.batch_size = predictor_config["batch_size"]
         self.device = device
         self.sevennet_model = sevennet_model
         self.sevennet_config = sevennet_config
@@ -129,6 +126,52 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
         assert len(forces) == len(energies) == len(num_atoms_per_structure)
         assert isinstance(forces, list) and isinstance(energies, list)
 
+        return {
+            "forces": forces,
+            "energy": energies,
+        }
+
+
+class LennardJonesPropertiesPredictor:  # pylint: disable=R0903
+    """
+    A class that predicts atomic properties, such as forces and energy, 
+    using the Lennard-Jones potential.
+    """
+
+    def __init__(self, device, predictor_config, dataset) -> None:
+        self.device = device
+        self.reference_atoms = {}
+        for data in dataset:
+            atoms = deepcopy(data.x["atoms"])
+            atoms.calc = LennardJones(**predictor_config)
+            self.reference_atoms[atoms.info["id"]] = atoms
+
+    def predict(self, batch: List[Any]) -> dict:
+        """
+        Predicts atomic forces and energies for a batch of atomic structures.
+        """
+        forces = []
+        energies = []
+        num_atoms_per_structure = []
+
+        for atoms in batch:
+            reference = self.reference_atoms[atoms.info["id"]]
+            reference.set_positions(atoms.positions)
+            num_atoms_per_structure.append(atoms.get_positions().shape[0])
+            energy_atoms = torch.tensor(
+                reference.get_potential_energy(),
+                device=self.device,
+                dtype=torch.float32,
+            ).unsqueeze(0)
+            forces_atoms = torch.tensor(
+                reference.get_forces(), device=self.device, dtype=torch.float32
+            )
+            assert torch.isnan(forces_atoms).any() is False
+            forces.append(forces_atoms)
+            energies.append(energy_atoms)
+
+        assert len(forces) == len(energies) == len(num_atoms_per_structure)
+        assert isinstance(forces, list) and isinstance(energies, list)
         return {
             "forces": forces,
             "energy": energies,

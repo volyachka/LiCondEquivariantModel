@@ -17,6 +17,12 @@ fi
 if check_editable sevenn; then
     echo sevenn already installed in editable mode
 else
-    echo 'sevenn not editable; installing'
+    echo 'superionic_toy not editable; installing'
     pip install -e ./external_libs/SevenNet
+fi
+if check_editable superionic_toy; then
+    echo sevenn already installed in editable mode
+else
+    echo 'superionic_toy not editable; installing'
+    pip install -e ./external_libs/SuperionicToyMD
 fi

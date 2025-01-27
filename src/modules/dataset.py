@@ -5,7 +5,7 @@ Dataset utilities and data processing for the SevenNet model.
 # Standard imports
 # Standard library imports
 from copy import deepcopy
-from typing import Any, List, Optional
+from typing import Any, List, Tuple, Optional
 
 # Third-party imports
 import numpy as np
@@ -15,64 +15,40 @@ from sklearn.model_selection import train_test_split
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.loader.dataloader import Collater
-from tqdm import tqdm
+from ase.neighborlist import NeighborList
 import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
+
 
 # First-party imports
 from modules.utils import query_mpid_structure
 
 
-def build_dataloader_cv(config):
+def build_dataloaders_from_dataset(
+    dataset: List[Data], test_size: int, random_state: int, batch_size: int
+) -> Tuple[DataLoader, DataLoader]:
     """
-    Build dataloaders for cross-validation.
-
-    Args:
-        config (dict): Configuration dictionary with data and training parameters.
-
-    Returns:
-        tuple: Train and validation dataloaders.
+    Splits a dataset into training and validation sets, and creates DataLoaders for each.
     """
-    dataset = build_dataset(
-        csv_path=config["data"]["data_path"],
-        li_column=config["data"]["target_column"],
-        temp=config["data"]["temperature"],
-        clip_value=config["data"]["clip_value"],
-    )
-
     train_indices, val_indices = train_test_split(
         np.arange(len(dataset)),
-        test_size=config["data"]["test_size"],
-        random_state=config["data"]["random_state"],
+        test_size=test_size,
+        random_state=random_state,
     )
 
     train_dataset = [dataset[i] for i in train_indices]
     val_dataset = [dataset[i] for i in val_indices]
 
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=config["data"]["batch_size"]
-    )
-    val_dataloader = DataLoader(val_dataset, batch_size=config["data"]["batch_size"])
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
+
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
     return train_dataloader, val_dataloader
 
-
-def build_dataset(
-    csv_path: str,
-    li_column: str,
-    temp: int,
-    clip_value: float,
+def build_dataset(  # pylint: disable=R0914
+    csv_path: str, li_column: str, temp: int, clip_value: float, cutoff: float
 ) -> List[Data]:
     """
-    Build dataset from a CSV file.
-
-    Args:
-        csv_path (str): Path to the CSV file.
-        li_column (str): Column name for the target property.
-        temp (int): Temperature to filter data.
-        clip_value (float): Minimum value for clipping the target column.
-
-    Returns:
-        list: List of PyTorch Geometric Data objects.
+    Builds a dataset from a CSV file by processing and filtering data based on specified parameters.
     """
     df = pd.read_csv(csv_path)
     df[li_column] = df[li_column].clip(lower=clip_value)
@@ -80,18 +56,21 @@ def build_dataset(
     docs = query_mpid_structure(mpids=mpids)
 
     dataset = []
-    for doc in tqdm(docs, desc="Building dataset"):
+    for index, doc in enumerate(docs):
         material_id = doc["material_id"]
         structure = doc["structure"]
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
+        atoms.info["id"] = index
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
             ].iloc[0]
         )
 
-        dataset.append(Data({"atoms": atoms, "log_diffusion": log_diffusion}))
+        nl = NeighborList(cutoff, self_interaction=False, bothways=True)
+
+        dataset.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
 
     return dataset
 
@@ -186,6 +165,7 @@ class AtomsToGraphCollater(Collater):
                 forces_mag = forces.norm(dim=1, keepdim=True)
                 factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
                 value = factor * forces
+                assert torch.isnan(value).any().item() is False
 
             edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
                 "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
@@ -219,7 +199,7 @@ class AtomsToGraphCollater(Collater):
 
         return atoms_list
 
-    def __call__(self, batch: List[Any]) -> Any: # pylint: disable=R0914
+    def __call__(self, batch: List[Any]) -> Any:  # pylint: disable=R0914
         """
         Process a batch of atomic data into graph data.
 
@@ -253,7 +233,6 @@ class AtomsToGraphCollater(Collater):
 
         with torch.enable_grad():
             properites = self.properties_predictor.predict(noise_structures_batch)
-
         forces_batch = properites["forces"]
         energy_batch = properites["energy"]
 
@@ -273,7 +252,6 @@ class AtomsToGraphCollater(Collater):
                     energy_batch, energy_equilibrium_batch, strict=True
                 )
             ]
-
         graphs_batch = self.transit(
             masses_batch=masses_batch,
             atoms_batch=atoms_batch,

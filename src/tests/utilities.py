@@ -20,12 +20,13 @@ def sevennet_predictor():
     Returns:
         SevenNetPropertiesPredictor: Initialized predictor object.
     """
-    config_name = "default-config"
-    batch_size = 50
+    predictor_config = {}
+    predictor_config["batch_size"] = 50
+    predictor_config["checkpoint"] = "7net-0"
     device = "cpu"
 
     return SevenNetPropertiesPredictor(
-        config_name=config_name, batch_size=batch_size, device=device
+        device=device, predictor_config=predictor_config
     )
 
 
@@ -56,6 +57,7 @@ def dataloader():
         li_column="v1_Li_slope",
         temp=1000,
         clip_value=0.0001,
+        cutoff=5
     )
 
     batch_size = 10
