@@ -35,13 +35,7 @@ class SimplePeriodicNetwork(SimpleNetwork):
                 - 'pool_nodes' determines whether to sum atom contributions or take the mean.
                 - 'num_nodes' is set to 1.0 for each example.
         """
-        # self.pool = False
-        # if kwargs["pool_nodes"] is True:  # Change to `is True`
-        #     kwargs["pool_nodes"] = False
-        #     kwargs["num_nodes"] = 1.0
-        #     self.pool = True
-        # else:
-        #     kwargs["num_nodes"] = 1.0
+
         assert kwargs["pool_nodes"] is False
         assert kwargs["num_nodes"] == 1.0
         super().__init__(**kwargs)
@@ -57,25 +51,14 @@ class SimplePeriodicNetwork(SimpleNetwork):
             batch, x, edge_src, edge_dst, edge_vec: Processed data, including edge vectors
             for periodic boundary conditions.
         """
-        if "batch" in data:
-            batch = data["batch"]
-        else:
-            batch = data["pos"].new_zeros(data["pos"].shape[0], dtype=torch.long)
 
-        edge_src = data["edge_index"][0]  # Edge source
-        edge_dst = data["edge_index"][1]  # Edge destination
-
-        # Compute relative distances + unit cell shifts for periodic boundaries
-        edge_batch = batch[edge_src]
-        edge_vec = (
-            data["pos"][edge_dst]
-            - data["pos"][edge_src]
-            + torch.einsum(
-                "ni,nij->nj", data["edge_shift"], data["lattice"][edge_batch]
-            )
+        return (
+            data["batch"],
+            data["x"],
+            data["edge_src"],
+            data["edge_dst"],
+            data["edge_vec"],
         )
-
-        return batch, data["x"], edge_src, edge_dst, edge_vec
 
     def forward(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """

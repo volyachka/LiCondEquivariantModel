@@ -134,7 +134,7 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
 
 class LennardJonesPropertiesPredictor:  # pylint: disable=R0903
     """
-    A class that predicts atomic properties, such as forces and energy, 
+    A class that predicts atomic properties, such as forces and energy,
     using the Lennard-Jones potential.
     """
 

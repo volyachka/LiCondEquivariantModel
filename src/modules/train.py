@@ -11,6 +11,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
 import wandb
 
+
 class Trainer:  # pylint: disable=R0902
     """
     Trainer class for managing model training and validation.

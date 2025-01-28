@@ -25,9 +25,7 @@ def sevennet_predictor():
     predictor_config["checkpoint"] = "7net-0"
     device = "cpu"
 
-    return SevenNetPropertiesPredictor(
-        device=device, predictor_config=predictor_config
-    )
+    return SevenNetPropertiesPredictor(device=device, predictor_config=predictor_config)
 
 
 @pytest.fixture
@@ -57,7 +55,7 @@ def dataloader():
         li_column="v1_Li_slope",
         temp=1000,
         clip_value=0.0001,
-        cutoff=5
+        cutoff=5,
     )
 
     batch_size = 10

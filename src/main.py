@@ -16,7 +16,11 @@ from modules.property_prediction import (
 )
 from modules.train import Trainer
 
-from modules.dataset import build_dataset, build_dataloaders_from_dataset, AtomsToGraphCollater
+from modules.dataset import (
+    build_dataset,
+    build_dataloaders_from_dataset,
+    AtomsToGraphCollater,
+)
 
 
 def load_config(config_path):
@@ -73,7 +77,9 @@ def main():
     elif property_predictor_name == "lennardjones":
         predictor = LennardJonesPropertiesPredictor(device, property_config, dataset)
     else:
-        raise NotImplementedError(f"Unsupported property_predictor: {property_predictor_name}")
+        raise NotImplementedError(
+            f"Unsupported property_predictor: {property_predictor_name}"
+        )
     # Build dataloaders
     train_dataloader, val_dataloader = build_dataloaders_from_dataset(
         dataset=dataset,
@@ -84,6 +90,7 @@ def main():
 
     # Customize collate functions for dataloaders
     train_dataloader.collate_fn = AtomsToGraphCollater(
+        dataset=dataset,
         cutoff=config["model"]["radial_cutoff"],
         noise_std=config["data"]["noise_std"],
         properties_predictor=predictor,
@@ -91,9 +98,11 @@ def main():
         num_noisy_configurations=config["training"]["num_noisy_configurations"],
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
+        upd_neigh_style=config["data"]["upd_neigh_style"],
     )
 
     val_dataloader.collate_fn = AtomsToGraphCollater(
+        dataset=dataset,
         cutoff=config["model"]["radial_cutoff"],
         noise_std=config["data"]["noise_std"],
         properties_predictor=predictor,
@@ -101,6 +110,7 @@ def main():
         num_noisy_configurations=config["training"]["num_noisy_configurations"],
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
+        upd_neigh_style=config["data"]["upd_neigh_style"],
     )
 
     if config["training"]["use_displacements"]:

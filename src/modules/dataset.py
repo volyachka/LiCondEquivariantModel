@@ -44,6 +44,7 @@ def build_dataloaders_from_dataset(
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
     return train_dataloader, val_dataloader
 
+
 def build_dataset(  # pylint: disable=R0914
     csv_path: str, li_column: str, temp: int, clip_value: float, cutoff: float
 ) -> List[Data]:
@@ -68,14 +69,15 @@ def build_dataset(  # pylint: disable=R0914
             ].iloc[0]
         )
 
-        nl = NeighborList(cutoff, self_interaction=False, bothways=True)
+        cuttofs = len(atoms.get_positions()) * [cutoff]
+        nl = NeighborList(cuttofs, self_interaction=False, bothways=True, skin=0.5)
 
         dataset.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
 
     return dataset
 
 
-class AtomsToGraphCollater(Collater):
+class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
     """
     Collater to convert atomic structures into graph representations.
     """
@@ -83,6 +85,7 @@ class AtomsToGraphCollater(Collater):
     def __init__(  # pylint: disable=R0913
         self,
         *,
+        dataset: List[Data],
         cutoff: float,
         noise_std: float,
         properties_predictor,
@@ -90,6 +93,7 @@ class AtomsToGraphCollater(Collater):
         use_displacements: bool,
         use_energies: bool,
         num_noisy_configurations: int,
+        upd_neigh_style: str,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -101,6 +105,15 @@ class AtomsToGraphCollater(Collater):
         self.num_noisy_configurations = num_noisy_configurations
         self.use_displacements = use_displacements
         self.use_energies = use_energies
+        self.upd_neigh_style = upd_neigh_style
+
+        assert self.upd_neigh_style in {"update_class", "call_func"}
+
+        self.nl_builders = {}
+
+        if self.upd_neigh_style == "update_class":
+            for data in dataset:
+                self.nl_builders[data.x["atoms"].info["id"]] = data.x["nl"]
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
@@ -121,7 +134,7 @@ class AtomsToGraphCollater(Collater):
             noises.append(new_atoms)
         return noises
 
-    def transit(  # pylint: disable=R0913, R0914
+    def transit(  # pylint: disable=R0913, R0914, E0606
         self,
         *,
         masses_batch: list[np.ndarray],
@@ -130,19 +143,29 @@ class AtomsToGraphCollater(Collater):
         forces_batch: list[torch.Tensor],
         energy_batch: list[torch.Tensor],
         log_diffusion_batch: list[float],
+        index_batch: list[int],
     ) -> list[Data]:
         """
         Convert noisy structures to graph data.
         """
         atoms_list = []
 
-        for mass, atoms, noise_structures, forces, energy, log_diffusion in zip(
+        for (
+            mass,
+            initial_atoms,
+            noise_structures,
+            forces,
+            energy,
+            log_diffusion,
+            index,
+        ) in zip(
             masses_batch,
             atoms_batch,
             noise_structures_batch,
             forces_batch,
             energy_batch,
             log_diffusion_batch,
+            index_batch,
             strict=True,
         ):
             mass = (
@@ -167,13 +190,43 @@ class AtomsToGraphCollater(Collater):
                 value = factor * forces
                 assert torch.isnan(value).any().item() is False
 
-            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
-                "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
-            )
+            pos = noise_structures.get_positions()
+            lattice = noise_structures.cell.array
+
+            if self.upd_neigh_style == "update_class":
+
+                self.nl_builders[index].update(noise_structures)
+
+                src = []
+                dst = []
+                vec = []
+
+                for i_atom, _ in enumerate(initial_atoms.symbols):
+                    neighbor_ids, offsets = self.nl_builders[id].get_neighbors(i_atom)
+                    rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
+                    suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
+                    neighbor_ids = neighbor_ids[suitable_neigh]
+                    offsets = offsets[suitable_neigh]
+                    rr = rr[suitable_neigh]
+
+                    src.append(np.ones(len(neighbor_ids)) * i_atom)
+                    dst.append(neighbor_ids)
+                    vec.append(rr)
+
+                edge_vec = np.vstack(vec)
+                edge_dst = np.concatenate(dst)
+                edge_src = np.concatenate(src)
+
+            if self.upd_neigh_style == "call_func":
+                edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
+                    "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
+                )
+
+                edge_vec = pos[edge_dst] - pos[edge_src] + (edge_shift @ lattice)
 
             if self.use_displacements:
                 shift = torch.tensor(
-                    noise_structures.get_positions() - atoms.get_positions(),
+                    noise_structures.get_positions() - initial_atoms.get_positions(),
                     dtype=torch.float32,
                     device=value.device,
                 )
@@ -183,20 +236,19 @@ class AtomsToGraphCollater(Collater):
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
             data = Data(
-                pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
+                pos=torch.tensor(pos, dtype=torch.float32, device=value.device),
                 x=value,
-                lattice=torch.tensor(
-                    noise_structures.cell.array, dtype=torch.float32
-                ).unsqueeze(0),
-                edge_index=torch.stack(
-                    [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
+                edge_src=torch.LongTensor(edge_src),
+                edge_dst=torch.LongTensor(edge_dst),
+                edge_vec=torch.tensor(
+                    edge_vec, dtype=torch.float32, device=value.device
                 ),
-                edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
-                target=torch.tensor(log_diffusion, dtype=torch.float32),
+                target=torch.tensor(
+                    log_diffusion, dtype=torch.float32, device=value.device
+                ),
             )
 
             atoms_list.append(data)
-
         return atoms_list
 
     def __call__(self, batch: List[Any]) -> Any:  # pylint: disable=R0914
@@ -213,6 +265,7 @@ class AtomsToGraphCollater(Collater):
         masses_batch = []
         log_diffusion_batch = []
         atoms_batch = []
+        index_batch = []
         num_atoms = []
 
         atoms_reference_positions = np.concatenate(
@@ -228,6 +281,9 @@ class AtomsToGraphCollater(Collater):
             )
             atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
             num_atoms.append(len(data.x["atoms"]))
+            index_batch.extend(
+                self.num_noisy_configurations * [data.x["atoms"].info["id"]]
+            )
 
         noise_structures_batch = self.set_noise_to_structures(atoms_batch)
 
@@ -259,6 +315,7 @@ class AtomsToGraphCollater(Collater):
             forces_batch=forces_batch,
             energy_batch=energy_batch,
             log_diffusion_batch=log_diffusion_batch,
+            index_batch=index_batch,
         )
 
         atoms_positions_should_be_unchanged = np.concatenate(
