@@ -202,7 +202,9 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 vec = []
 
                 for i_atom, _ in enumerate(initial_atoms.symbols):
-                    neighbor_ids, offsets = self.nl_builders[id].get_neighbors(i_atom)
+                    neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
+                        i_atom
+                    )
                     rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
                     suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
                     neighbor_ids = neighbor_ids[suitable_neigh]

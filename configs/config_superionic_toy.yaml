@@ -16,6 +16,8 @@ data:
   clip_value: 0.0001
 
 model:
+  mix_properites: False
+  layers: 3
   radial_cutoff: 5
   num_neighbors: 50
   predict_importance: False

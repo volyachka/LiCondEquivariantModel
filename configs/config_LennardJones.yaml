@@ -9,7 +9,7 @@ data:
   target_column: "v1_Li_slope"
   temperature: 1000
   noise_std: 0.1 
-  batch_size: 10
+  batch_size: 20
   num_workers: 4  
   test_size: 0.2
   random_state: 42
@@ -17,6 +17,8 @@ data:
   upd_neigh_style: "update_class"
 
 model:
+  mix_properites: False
+  layers: 3
   radial_cutoff: 5
   num_neighbors: 50
   predict_importance: False

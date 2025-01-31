@@ -14,6 +14,8 @@ from modules.property_prediction import (
     SevenNetPropertiesPredictor,
     LennardJonesPropertiesPredictor,
 )
+from modules.nn import MixingNetwork
+
 from modules.train import Trainer
 
 from modules.dataset import (
@@ -126,14 +128,26 @@ def main():
     else:
         irreps_out = "1x0e"
 
-    net = SimplePeriodicNetwork(
-        irreps_in=irreps_in,
-        irreps_out=irreps_out,
-        max_radius=config["model"]["radial_cutoff"],
-        num_neighbors=config["model"]["num_neighbors"],
-        pool_nodes=config["model"]["pool_nodes"],
-        num_nodes=config["model"]["num_nodes"],
-    )
+    if config["model"]["mix_properites"]:
+        net = MixingNetwork(
+            layers=config["model"]["layers"],
+            irreps_in=irreps_in,
+            irreps_out=irreps_out,
+            pool_nodes=config["model"]["pool_nodes"],
+            max_radius=config["model"]["radial_cutoff"],
+            num_neighbors=config["model"]["num_neighbors"],
+            num_nodes=config["model"]["num_nodes"],
+        )
+    else:
+        net = SimplePeriodicNetwork(
+            layers=config["model"]["layers"],
+            irreps_in=irreps_in,
+            irreps_out=irreps_out,
+            pool_nodes=config["model"]["pool_nodes"],
+            max_radius=config["model"]["radial_cutoff"],
+            num_neighbors=config["model"]["num_neighbors"],
+            num_nodes=config["model"]["num_nodes"],
+        )
 
     # Create a Trainer instance and train the model
     trainer = Trainer(net, train_dataloader, val_dataloader, config)

@@ -188,9 +188,18 @@ class Trainer:  # pylint: disable=R0902
         if train:
             self.optimizer.zero_grad()
 
-        data = data.to(self.device)
-        outputs = self.model(data)
+        indexing_atoms, indexing_noise_variations, indexing_both = (
+            self._generate_index_arrays(num_atoms)
+        )
+        aggregation_index = self._choose_index(
+            indexing_atoms, indexing_noise_variations, indexing_both
+        )
 
+        data = data.to(self.device)
+        if self.config["model"]["mix_properites"]:
+            outputs = self.model(data, indexing_noise_variations)
+        else:
+            outputs = self.model(data)
         if self.predict_importance:
             predictions, importances = (
                 outputs[..., 0],
@@ -201,13 +210,6 @@ class Trainer:  # pylint: disable=R0902
 
         loss = 0.0
         y_true, y_pred = [], []
-
-        indexing_atoms, indexing_noise_variations, indexing_both = (
-            self._generate_index_arrays(num_atoms)
-        )
-        aggregation_index = self._choose_index(
-            indexing_atoms, indexing_noise_variations, indexing_both
-        )
 
         if self.predict_importance:
             importances = torch_scatter.scatter_softmax(

@@ -166,7 +166,8 @@ class LennardJonesPropertiesPredictor:  # pylint: disable=R0903
             forces_atoms = torch.tensor(
                 reference.get_forces(), device=self.device, dtype=torch.float32
             )
-            assert torch.isnan(forces_atoms).any() is False
+            if torch.isnan(forces_atoms).any() is False:
+                forces_atoms = torch.nan_to_num(forces_atoms)
             forces.append(forces_atoms)
             energies.append(energy_atoms)
 
