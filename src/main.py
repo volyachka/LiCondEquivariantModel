@@ -9,12 +9,13 @@ import torch
 import yaml
 
 
-from modules.nn import SimplePeriodicNetwork
+from models.mixing_network import MixingNetwork
+from models.simple_network import SimplePeriodicNetwork
+
 from modules.property_prediction import (
     SevenNetPropertiesPredictor,
     LennardJonesPropertiesPredictor,
 )
-from modules.nn import MixingNetwork
 
 from modules.train import Trainer
 

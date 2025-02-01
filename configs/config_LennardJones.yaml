@@ -17,7 +17,7 @@ data:
   upd_neigh_style: "update_class"
 
 model:
-  mix_properites: False
+  mix_properites: True
   layers: 3
   radial_cutoff: 5
   num_neighbors: 50
