@@ -72,8 +72,11 @@ class Trainer:  # pylint: disable=R0902
                 tags.append("forces_divided_by_mass")
             if self.training_config["use_displacements"]:
                 tags.append("use_displacements")
+
             if self.training_config["use_energies"]:
                 tags.append("use_energies")
+
+            tags.append(f"num_layers: {self.config['model']['layers']}")
             tags.append(self.mode)
 
             self.run = wandb.init(

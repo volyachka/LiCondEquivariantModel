@@ -195,15 +195,45 @@ class MixingNetwork(torch.nn.Module):
         )
 
     def preprocess(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
-        """Forward pass through the MixingNetwork."""
+        """
+        Preprocesses the data for the forward pass.
 
-        return (
-            data["batch"],
-            data["x"],
-            data["edge_src"],
-            data["edge_dst"],
-            data["edge_vec"],
+        Args:
+            data (Union[Data, Dict[str, torch.Tensor]]): Input data for the network.
+
+        Returns:
+            batch, x, edge_src, edge_dst, edge_vec: Processed data, including edge vectors
+            for periodic boundary conditions.
+        """
+
+        batch = data["batch"]
+
+        edge_src = data["edge_index"][0]  # Edge source
+        edge_dst = data["edge_index"][1]  # Edge destination
+
+        # Compute relative distances + unit cell shifts for periodic boundaries
+        edge_batch = batch[edge_src]
+        edge_vec = (
+            data["pos"][edge_dst]
+            - data["pos"][edge_src]
+            + torch.einsum(
+                "ni,nij->nj", data["edge_shift"], data["lattice"][edge_batch]
+            )
         )
+
+        assert torch.allclose(edge_vec, data["edge_vec"], atol=1e-3, rtol=1e-5)
+
+        # assert torch.allclose(edge_src, data["edge_src"], atol=1e-3, rtol=1e-5)
+        # assert torch.allclose(edge_dst, data["edge_dst"], atol=1e-3, rtol=1e-5)
+        # return (
+        #     data["batch"],
+        #     data["x"],
+        #     data["edge_src"],
+        #     data["edge_dst"],
+        #     data["edge_vec"],
+        # )
+
+        return batch, data["x"], edge_src, edge_dst, edge_vec
 
     def forward(
         self,

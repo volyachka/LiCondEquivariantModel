@@ -201,23 +201,23 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 dst = []
                 vec = []
 
-                for i_atom, _ in enumerate(initial_atoms.symbols):
-                    neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
-                        i_atom
-                    )
-                    rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
-                    suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
-                    neighbor_ids = neighbor_ids[suitable_neigh]
-                    offsets = offsets[suitable_neigh]
-                    rr = rr[suitable_neigh]
+            for i_atom, _ in enumerate(initial_atoms.symbols):
+                neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
+                    i_atom
+                )
+                rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
+                suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
+                neighbor_ids = neighbor_ids[suitable_neigh]
+                offsets = offsets[suitable_neigh]
+                rr = rr[suitable_neigh]
 
-                    src.append(np.ones(len(neighbor_ids)) * i_atom)
-                    dst.append(neighbor_ids)
-                    vec.append(rr)
+                src.append(np.ones(len(neighbor_ids)) * i_atom)
+                dst.append(neighbor_ids)
+                vec.append(rr)
 
-                edge_vec = np.vstack(vec)
-                edge_dst = np.concatenate(dst)
-                edge_src = np.concatenate(src)
+            edge_vec = np.vstack(vec)
+            edge_dst = np.concatenate(dst)
+            edge_src = np.concatenate(src)
 
             if self.upd_neigh_style == "call_func":
                 edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
@@ -237,17 +237,45 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
             if self.use_energies:
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
+            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
+                "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
+            )
+
+            # data = Data(
+            #     pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
+            #     x=value,
+            #     lattice=torch.tensor(
+            #         noise_structures.cell.array, dtype=torch.float32
+            #     ).unsqueeze(0),
+            #     edge_index=torch.stack(
+            #         [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
+            #     ),
+            #     edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
+            #     target=torch.tensor(log_diffusion, dtype=torch.float32),
+            # )
+
             data = Data(
-                pos=torch.tensor(pos, dtype=torch.float32, device=value.device),
+                pos=torch.tensor(
+                    noise_structures.get_positions(),
+                    dtype=torch.float32,
+                    device=value.device,
+                ),
                 x=value,
-                edge_src=torch.LongTensor(edge_src),
-                edge_dst=torch.LongTensor(edge_dst),
+                edge_src=torch.LongTensor(deepcopy(edge_src)),
+                edge_dst=torch.LongTensor(deepcopy(edge_dst)),
                 edge_vec=torch.tensor(
                     edge_vec, dtype=torch.float32, device=value.device
                 ),
                 target=torch.tensor(
                     log_diffusion, dtype=torch.float32, device=value.device
                 ),
+                lattice=torch.tensor(
+                    noise_structures.cell.array, dtype=torch.float32
+                ).unsqueeze(0),
+                edge_index=torch.stack(
+                    [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
+                ),
+                edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
             )
 
             atoms_list.append(data)
