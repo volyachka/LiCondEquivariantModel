@@ -5,7 +5,7 @@ Dataset utilities and data processing for the SevenNet model.
 # Standard imports
 # Standard library imports
 from copy import deepcopy
-from typing import Any, List, Tuple, Optional
+from typing import Any, List, Tuple, Optional, Literal
 
 # Third-party imports
 import numpy as np
@@ -93,7 +93,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         use_displacements: bool,
         use_energies: bool,
         num_noisy_configurations: int,
-        upd_neigh_style: str,
+        upd_neigh_style: Literal["update_class", "call_func"],
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -201,30 +201,32 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 dst = []
                 vec = []
 
-            for i_atom, _ in enumerate(initial_atoms.symbols):
-                neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
-                    i_atom
-                )
-                rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
-                suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
-                neighbor_ids = neighbor_ids[suitable_neigh]
-                offsets = offsets[suitable_neigh]
-                rr = rr[suitable_neigh]
+                for i_atom, _ in enumerate(initial_atoms.symbols):
+                    neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
+                        i_atom
+                    )
+                    rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
+                    suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
+                    neighbor_ids = neighbor_ids[suitable_neigh]
+                    offsets = offsets[suitable_neigh]
+                    rr = rr[suitable_neigh]
 
-                src.append(np.ones(len(neighbor_ids)) * i_atom)
-                dst.append(neighbor_ids)
-                vec.append(rr)
+                    src.append(np.ones(len(neighbor_ids)) * i_atom)
+                    dst.append(neighbor_ids)
+                    vec.append(rr)
 
-            edge_vec = np.vstack(vec)
-            edge_dst = np.concatenate(dst)
-            edge_src = np.concatenate(src)
+                edge_vec = np.vstack(vec)
+                edge_dst = np.concatenate(dst)
+                edge_src = np.concatenate(src)
 
-            if self.upd_neigh_style == "call_func":
+            elif self.upd_neigh_style == "call_func":
                 edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
                     "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
                 )
 
                 edge_vec = pos[edge_dst] - pos[edge_src] + (edge_shift @ lattice)
+            else:
+                raise NotImplementedError(self.upd_neigh_style)
 
             if self.use_displacements:
                 shift = torch.tensor(
@@ -276,6 +278,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                     [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
                 ),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
+                symbols=np.array(noise_structures.get_chemical_symbols()),
             )
 
             atoms_list.append(data)

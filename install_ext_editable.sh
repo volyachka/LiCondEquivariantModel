@@ -20,7 +20,7 @@ else
     echo 'sevenn not editable; installing'
     pip install -e ./external_libs/SevenNet
 fi
-if check_editable superionic_toy; thenc
+if check_editable superionic_toy; then
     echo superionic_toy already installed in editable mode
 else
     echo 'superionic_toy not editable; installing'

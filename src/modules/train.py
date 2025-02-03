@@ -9,6 +9,7 @@ import torch_scatter
 from torch import nn, optim
 from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
+import numpy as np
 import wandb
 
 
@@ -51,16 +52,21 @@ class Trainer:  # pylint: disable=R0902
 
         modes = [
             self.training_config["softmax_within_single_atom_by_configurations"],
-            self.training_config["softmax_within_single_structure_by_configurations"],
+            self.training_config["softmax_within_single_structure_by_atoms"],
             self.training_config["softmax_within_configurations"],
         ]
 
         assert sum(modes) == 1
+        if self.training_config["predict_per_atom"]:
+            assert (
+                self.training_config["softmax_within_single_atom_by_configurations"]
+                is True
+            )
 
         if self.config["training"]["softmax_within_single_atom_by_configurations"]:
             self.mode = "softmax_within_single_atom_by_configurations"
-        if self.config["training"]["softmax_within_single_structure_by_configurations"]:
-            self.mode = "softmax_within_single_structure_by_configurations"
+        if self.config["training"]["softmax_within_single_structure_by_atoms"]:
+            self.mode = "softmax_within_single_structure_by_atoms"
         if self.config["training"]["softmax_within_configurations"]:
             self.mode = "softmax_within_configurations"
 
@@ -72,12 +78,13 @@ class Trainer:  # pylint: disable=R0902
                 tags.append("forces_divided_by_mass")
             if self.training_config["use_displacements"]:
                 tags.append("use_displacements")
-
             if self.training_config["use_energies"]:
                 tags.append("use_energies")
-
+            if self.config["model"]["mix_properites"]:
+                tags.append("mix_properites")
             tags.append(f"num_layers: {self.config['model']['layers']}")
             tags.append(self.mode)
+            tags.append(self.config["data"]["upd_neigh_style"])
 
             self.run = wandb.init(
                 entity=config["wandb"]["entity_name"],
@@ -166,7 +173,7 @@ class Trainer:  # pylint: disable=R0902
     def _choose_index(self, indexing_atoms, indexing_noise_variations, indexing_both):
         if self.mode == "softmax_within_single_atom_by_configurations":
             return indexing_atoms
-        if self.mode == "softmax_within_single_structure_by_configurations":
+        if self.mode == "softmax_within_single_structure_by_atoms":
             return indexing_noise_variations
         if self.mode == "softmax_within_configurations":
             return indexing_both
@@ -186,7 +193,9 @@ class Trainer:  # pylint: disable=R0902
         entropy /= normalization
         return entropy
 
-    def _process_batch(self, data, num_atoms, train=True):  # pylint: disable=R0914
+    def _process_batch(
+        self, data, num_atoms, train=True
+    ):  # pylint: disable=R0912, R0914
         """Process a single batch of data."""
         if train:
             self.optimizer.zero_grad()
@@ -210,9 +219,6 @@ class Trainer:  # pylint: disable=R0902
             )
         else:
             predictions = outputs
-
-        loss = 0.0
-        y_true, y_pred = [], []
 
         if self.predict_importance:
             importances = torch_scatter.scatter_softmax(
@@ -238,17 +244,37 @@ class Trainer:  # pylint: disable=R0902
 
         assert torch.equal(idx_1, idx_2)
 
-        final_predictions = torch_scatter.scatter_mean(
-            intermediate_predictions, idx_1, dim=0
-        )
+        if self.config["training"]["predict_per_atom"]:
 
-        y_true = data["target"][:: self.num_noisy_configurations]
+            final_predictions = intermediate_predictions.squeeze()
+
+            symbols = np.concatenate(data["symbols"][:: self.num_noisy_configurations])
+            mask = symbols == "Li"
+            clip_value = self.config["data"]["clip_value"]
+            y_true = torch.full(final_predictions.shape, clip_value, device=self.device)
+            new_indexes = (
+                torch.arange(len(num_atoms))
+                .repeat_interleave(torch.tensor(num_atoms))
+                .to(self.device)
+            )
+            li_conductivity = data["target"][:: self.num_noisy_configurations][
+                new_indexes
+            ]
+            y_true[mask] = li_conductivity[mask]
+        else:
+            final_predictions = torch_scatter.scatter_mean(
+                intermediate_predictions, idx_1, dim=0
+            )
+
+            y_true = data["target"][:: self.num_noisy_configurations]
+
+            if not self.predict_importance:
+                final_predictions = final_predictions.squeeze()
+
         y_pred = final_predictions.detach()
+        assert final_predictions.shape == y_true.shape
 
-        if not self.predict_importance:
-            final_predictions = final_predictions.squeeze()
-
-        loss += self.criterion(final_predictions, y_true)
+        loss = self.criterion(final_predictions, y_true)
 
         if train:
             loss.backward()
@@ -273,8 +299,8 @@ class Trainer:  # pylint: disable=R0902
                 batch_loss, batch_y_true, batch_y_pred, batch_entropy = (
                     self._process_batch(data, num_atoms, train=train)
                 )
-                total_loss += batch_loss
-                num_samples += len(num_atoms)
+                total_loss += batch_loss * len(batch_y_true)
+                num_samples += len(batch_y_true)
                 y_true.extend(batch_y_true)
                 y_pred.extend(batch_y_pred)
                 entropy.extend(batch_entropy)

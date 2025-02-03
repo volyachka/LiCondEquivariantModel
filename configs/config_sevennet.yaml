@@ -1,5 +1,5 @@
 # General settings
-experiment_name: "noise_0.1_noisy_config_5_importance_False_const_lr_0.0001"
+experiment_name: "predict_per_atom"
 comment: "structures aggregation"
 output_dir: "/mnt/hdd/turchina/saved_models" 
  
@@ -43,12 +43,13 @@ training:
   num_epochs: 500
   device: "cuda:0"
   save_model_every_n_epochs: 20
-  forces_divided_by_mass: False
+  forces_divided_by_mass: True
   use_displacements: False
   use_energies: False
-  softmax_within_single_structure_by_configurations: False
-  softmax_within_single_atom_by_configurations: False
-  softmax_within_configurations: True
+  softmax_within_single_structure_by_atoms: False
+  softmax_within_single_atom_by_configurations: True
+  softmax_within_configurations: False
+  predict_per_atom: True
 
 property_predictor:
   name: "sevennet"
@@ -57,7 +58,7 @@ property_predictor:
     batch_size: 50
   
 wandb:
-  verbose: False
+  verbose: True
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
 

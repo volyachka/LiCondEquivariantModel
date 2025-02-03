@@ -48,7 +48,8 @@ training:
   softmax_within_single_structure_by_configurations: False
   softmax_within_single_atom_by_configurations: False
   softmax_within_configurations: True
-
+  predict_per_atom: True
+  
 property_predictor:
   name: "superionic_toy"
   property_config:

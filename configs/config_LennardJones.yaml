@@ -1,6 +1,6 @@
 # General settings
-experiment_name: "LennardJones"
-comment: "structures aggregation"
+experiment_name: "LennardJones 0.001"
+comment: "LennardJones potentials"
 output_dir: "/mnt/hdd/turchina/saved_models" 
  
 # Data configuration
@@ -34,7 +34,7 @@ scheduler:
 
 optimizer:
   name: "Adam"
-  learning_rate: 0.0001
+  learning_rate: 0.001
 
 # Training hyperparameters
 training:
@@ -43,12 +43,13 @@ training:
   num_epochs: 500
   device: "cuda:0"
   save_model_every_n_epochs: 20
-  forces_divided_by_mass: False
+  forces_divided_by_mass: True
   use_displacements: False
   use_energies: False
   softmax_within_single_structure_by_configurations: False
   softmax_within_single_atom_by_configurations: False
   softmax_within_configurations: True
+  predict_per_atom: False
 
 property_predictor:
   name: "LennardJones"
@@ -56,7 +57,7 @@ property_predictor:
     sigma: 2
   
 wandb:
-  verbose: False
+  verbose: True
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
 

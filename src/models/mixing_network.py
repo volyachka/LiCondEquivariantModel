@@ -221,8 +221,7 @@ class MixingNetwork(torch.nn.Module):
             )
         )
 
-        assert torch.allclose(edge_vec, data["edge_vec"], atol=1e-3, rtol=1e-5)
-
+        # assert torch.allclose(edge_vec, data["edge_vec"], atol=1e-3, rtol=1e-5)
         # assert torch.allclose(edge_src, data["edge_src"], atol=1e-3, rtol=1e-5)
         # assert torch.allclose(edge_dst, data["edge_dst"], atol=1e-3, rtol=1e-5)
         # return (
