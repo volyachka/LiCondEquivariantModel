@@ -1,10 +1,11 @@
 # General settings
-experiment_name: "predict_per_atom"
+experiment_name: "sevennet_mix_properites_num_noisy_configurations_5_predict_importance"
 comment: "structures aggregation"
 output_dir: "/mnt/hdd/turchina/saved_models" 
  
 # Data configuration
 data:
+  name: "md_by_sevennet"
   data_path: "data/sevennet_slopes.csv"
   target_column: "v1_Li_slope"
   temperature: 1000
@@ -17,11 +18,12 @@ data:
   upd_neigh_style: "update_class"
 
 model:
-  mix_properites: False
+  mix_properites: True
   layers: 3
   radial_cutoff: 5
   num_neighbors: 50
-  predict_importance: False
+  number_of_basis: 3
+  predict_importance: True
   pool_nodes: False
   num_nodes: 1.0
 
@@ -47,18 +49,18 @@ training:
   use_displacements: False
   use_energies: False
   softmax_within_single_structure_by_atoms: False
-  softmax_within_single_atom_by_configurations: True
-  softmax_within_configurations: False
-  predict_per_atom: True
+  softmax_within_single_atom_by_configurations: False
+  softmax_within_configurations: True
+  predict_per_atom: False
 
 property_predictor:
   name: "sevennet"
   property_config:
     checkpoint: "7net-0"
-    batch_size: 50
+    batch_size: 25
   
 wandb:
-  verbose: True
+  verbose: False
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
 

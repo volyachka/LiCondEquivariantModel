@@ -1,11 +1,5 @@
 """
-This module contains utility functions for caching and querying materials from 
-the Materials Project API.
-
-Functions:
-- setup_cache: Set up a cache using joblib.
-- _query_mpid_structure: Query the Materials Project database for structures based on MPIDs.
-- query_mpid_structure: Public function to query material structures based on MPIDs.
+This module contains utility functions
 """
 
 import os
@@ -14,6 +8,10 @@ from typing import List, Optional, Union
 
 import joblib
 from mp_api.client import MPRester
+
+import numpy as np
+from ase.neighborlist import NeighborList
+from pymatgen.io.ase import MSONAtoms
 
 
 CACHE_ENV_VAR = "PFP_CACHE"
@@ -84,3 +82,45 @@ def query_mpid_structure(mpids: Union[List[str], str]) -> List[dict]:
         _query_mpid_structure(sorted(mpids)),
         key=lambda doc: int(doc["material_id"][3:]),
     )
+
+
+def get_cleaned_neighbours(
+    nl_builder: NeighborList, noise_structure: MSONAtoms, cutoff: float
+):
+    """
+    Get the cleaned neighbor list from a noisy atomic structure.
+
+    This function builds a neighbor list for a given noisy atomic structure,
+    filters the neighbors based on the cutoff distance, and returns the
+    corresponding edge indices and vectors. The atomic positions are updated
+    using the neighbor list builder, and the distances are adjusted according
+    to the lattice for periodic systems.
+    """
+
+    pos = noise_structure.get_positions()
+    lattice = noise_structure.cell.array
+
+    nl_builder.update(noise_structure)
+
+    src = []
+    dst = []
+    vec = []
+
+    for i_atom, _ in enumerate(noise_structure.symbols):
+        neighbor_ids, offsets = nl_builder.get_neighbors(i_atom)
+        rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
+
+        if cutoff is not None:
+            suitable_neigh = np.linalg.norm(rr, axis=1) <= cutoff
+            neighbor_ids = neighbor_ids[suitable_neigh]
+            offsets = offsets[suitable_neigh]
+            rr = rr[suitable_neigh]
+
+        src.append(np.ones(len(neighbor_ids)) * i_atom)
+        dst.append(neighbor_ids)
+        vec.append(rr)
+
+    edge_dst = np.concatenate(dst)
+    edge_src = np.concatenate(src)
+
+    return edge_src, edge_dst

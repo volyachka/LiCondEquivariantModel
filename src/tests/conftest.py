@@ -50,7 +50,7 @@ def dataloader():
     Returns:
         DataLoader: DataLoader instance for the dataset.
     """
-    dataset = build_dataset(
+    raw_dataset = build_dataset(
         csv_path="data/sevennet_slopes.csv",
         li_column="v1_Li_slope",
         temp=1000,
@@ -59,4 +59,21 @@ def dataloader():
     )
 
     batch_size = 10
-    return DataLoader(dataset, batch_size=batch_size)
+    return DataLoader(raw_dataset, batch_size=batch_size)
+
+
+@pytest.fixture
+def dataset():
+    """
+    Fixture to build a dataset and return a DataLoader instance.
+
+    Returns:
+        DataLoader: DataLoader instance for the dataset.
+    """
+    return build_dataset(
+        csv_path="data/sevennet_slopes.csv",
+        li_column="v1_Li_slope",
+        temp=1000,
+        clip_value=0.0001,
+        cutoff=5,
+    )

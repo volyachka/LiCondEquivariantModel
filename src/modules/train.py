@@ -9,7 +9,6 @@ import torch_scatter
 from torch import nn, optim
 from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
-import numpy as np
 import wandb
 
 
@@ -134,16 +133,13 @@ class Trainer:  # pylint: disable=R0902
         )
 
         y_true = (
-            torch.concatenate([i.target.cpu() for i, _ in dataloader])
-            .cpu()
-            .detach()
-            .numpy()
+            torch.concatenate([i.y.cpu() for i, _ in dataloader]).cpu().detach().numpy()
         )
 
         val_thorough_r2 = r2_score(y_true, y_pred)
         val_thorough_loss = mean_squared_error(y_true, y_pred)
 
-        return val_thorough_loss, val_thorough_r2
+        return val_thorough_loss, val_thorough_r2, y_true, y_pred
 
     def _generate_index_arrays(self, num_atoms):
 
@@ -208,6 +204,8 @@ class Trainer:  # pylint: disable=R0902
         )
 
         data = data.to(self.device)
+        assert torch.isnan(data["x"]).any().item() is False
+
         if self.config["model"]["mix_properites"]:
             outputs = self.model(data, indexing_noise_variations)
         else:
@@ -245,35 +243,18 @@ class Trainer:  # pylint: disable=R0902
         assert torch.equal(idx_1, idx_2)
 
         if self.config["training"]["predict_per_atom"]:
-
             final_predictions = intermediate_predictions.squeeze()
-
-            symbols = np.concatenate(data["symbols"][:: self.num_noisy_configurations])
-            mask = symbols == "Li"
-            clip_value = self.config["data"]["clip_value"]
-            y_true = torch.full(final_predictions.shape, clip_value, device=self.device)
-            new_indexes = (
-                torch.arange(len(num_atoms))
-                .repeat_interleave(torch.tensor(num_atoms))
-                .to(self.device)
-            )
-            li_conductivity = data["target"][:: self.num_noisy_configurations][
-                new_indexes
-            ]
-            y_true[mask] = li_conductivity[mask]
         else:
             final_predictions = torch_scatter.scatter_mean(
                 intermediate_predictions, idx_1, dim=0
             )
-
-            y_true = data["target"][:: self.num_noisy_configurations]
-
             if not self.predict_importance:
                 final_predictions = final_predictions.squeeze()
 
+        y_true = data["y"][:: self.num_noisy_configurations]
         y_pred = final_predictions.detach()
-        assert final_predictions.shape == y_true.shape
 
+        assert final_predictions.shape == y_true.shape
         loss = self.criterion(final_predictions, y_true)
 
         if train:
@@ -354,16 +335,17 @@ class Trainer:  # pylint: disable=R0902
                     and epoch % self.training_config.get("save_model_every_n_epochs", 1)
                     == 0
                 ):
-                    thorough_train_loss, thorough_train_r2 = self._thorough_validation(
-                        self.train_dataloader
+                    thorough_train_loss, thorough_train_r2, _, _ = (
+                        self._thorough_validation(self.train_dataloader)
                     )
 
-                    thorough_val_loss, thorough_val_r2 = self._thorough_validation(
-                        self.val_dataloader
+                    thorough_val_loss, thorough_val_r2, _, _ = (
+                        self._thorough_validation(self.val_dataloader)
                     )
-                    info["thorough_val_loss"] = (thorough_val_loss,)
-                    info["thorough_val_r2"] = (thorough_val_r2,)
-                    info["thorough_train_loss"] = (thorough_train_loss,)
+
+                    info["thorough_val_loss"] = thorough_val_loss
+                    info["thorough_val_r2"] = thorough_val_r2
+                    info["thorough_train_loss"] = thorough_train_loss
                     info["thorough_train_r2"] = thorough_train_r2
 
                 wandb.log(info)

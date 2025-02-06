@@ -14,7 +14,8 @@ from models.simple_network import SimplePeriodicNetwork
 
 from modules.property_prediction import (
     SevenNetPropertiesPredictor,
-    LennardJonesPropertiesPredictor,
+    AseCalculatorPropertiesPredictor,
+    RandomPropertiesPredictor,
 )
 
 from modules.train import Trainer
@@ -22,6 +23,7 @@ from modules.train import Trainer
 from modules.dataset import (
     build_dataset,
     build_dataloaders_from_dataset,
+    build_superionic_toy_dataset,
     AtomsToGraphCollater,
 )
 
@@ -67,22 +69,39 @@ def main():
         else config["training"]["device"]
     )
 
-    dataset = build_dataset(
-        csv_path=config["data"]["data_path"],
-        li_column=config["data"]["target_column"],
-        temp=config["data"]["temperature"],
-        clip_value=config["data"]["clip_value"],
-        cutoff=config["model"]["radial_cutoff"],
-    )
-
-    if property_predictor_name == "sevennet":
-        predictor = SevenNetPropertiesPredictor(device, property_config)
-    elif property_predictor_name == "lennardjones":
-        predictor = LennardJonesPropertiesPredictor(device, property_config, dataset)
-    else:
-        raise NotImplementedError(
-            f"Unsupported property_predictor: {property_predictor_name}"
+    if config["data"]["name"] == "md_by_sevennet":
+        dataset = build_dataset(
+            csv_path=config["data"]["data_path"],
+            li_column=config["data"]["target_column"],
+            temp=config["data"]["temperature"],
+            clip_value=config["data"]["clip_value"],
+            cutoff=config["model"]["radial_cutoff"],
         )
+    elif config["data"]["name"] == "toy_dataset":
+        dataset = build_superionic_toy_dataset(
+            root_folder=config["data"]["root_folder"],
+            clip_value=config["data"]["clip_value"],
+            cutoff=config["model"]["radial_cutoff"],
+        )
+    else:
+        raise NotImplementedError()
+    match property_predictor_name:
+        case "sevennet":
+            predictor = SevenNetPropertiesPredictor(
+                device,
+                property_config,
+            )
+        case "lennardjones" | "superionic_toy":
+            predictor = AseCalculatorPropertiesPredictor(
+                device, property_predictor_name, property_config, dataset
+            )
+        case "random":
+            predictor = RandomPropertiesPredictor(device)
+        case _:
+            raise NotImplementedError(
+                f"Unsupported property_predictor: {property_predictor_name}"
+            )
+
     # Build dataloaders
     train_dataloader, val_dataloader = build_dataloaders_from_dataset(
         dataset=dataset,
@@ -102,6 +121,8 @@ def main():
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
         upd_neigh_style=config["data"]["upd_neigh_style"],
+        predict_per_atom=config["training"]["predict_per_atom"],
+        clip_value=config["data"]["clip_value"],
     )
 
     val_dataloader.collate_fn = AtomsToGraphCollater(
@@ -114,6 +135,8 @@ def main():
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
         upd_neigh_style=config["data"]["upd_neigh_style"],
+        predict_per_atom=config["training"]["predict_per_atom"],
+        clip_value=config["data"]["clip_value"],
     )
 
     if config["training"]["use_displacements"]:
@@ -138,6 +161,7 @@ def main():
             max_radius=config["model"]["radial_cutoff"],
             num_neighbors=config["model"]["num_neighbors"],
             num_nodes=config["model"]["num_nodes"],
+            number_of_basis=config["model"]["number_of_basis"],
         )
     else:
         net = SimplePeriodicNetwork(
@@ -148,6 +172,7 @@ def main():
             max_radius=config["model"]["radial_cutoff"],
             num_neighbors=config["model"]["num_neighbors"],
             num_nodes=config["model"]["num_nodes"],
+            number_of_basis=config["model"]["number_of_basis"],
         )
 
     # Create a Trainer instance and train the model

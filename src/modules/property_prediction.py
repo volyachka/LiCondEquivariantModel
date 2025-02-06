@@ -132,18 +132,50 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
         }
 
 
-class LennardJonesPropertiesPredictor:  # pylint: disable=R0903
+class RandomPropertiesPredictor:  # pylint: disable=R0903
+    """
+    A class that predicts atomic properties, such as forces and energy,
+    using random predicitons.
+    """
+
+    def __init__(self, device) -> None:
+        self.device = device
+
+    def predict(self, batch: List[Any]) -> dict:
+        """
+        Predicts atomic forces and energies for a batch of atomic structures.
+        """
+        forces = []
+        energies = []
+
+        for atoms in batch:
+            forces_atoms = torch.rand(atoms.get_positions().shape, device=self.device)
+            energy_atoms = torch.rand(1, device=self.device)
+            forces.append(forces_atoms)
+            energies.append(energy_atoms)
+
+        assert len(forces) == len(energies)
+        assert isinstance(forces, list) and isinstance(energies, list)
+        return {
+            "forces": forces,
+            "energy": energies,
+        }
+
+
+class AseCalculatorPropertiesPredictor:  # pylint: disable=R0903
     """
     A class that predicts atomic properties, such as forces and energy,
     using the Lennard-Jones potential.
     """
 
-    def __init__(self, device, predictor_config, dataset) -> None:
+    def __init__(self, device, name, predictor_config, dataset) -> None:
         self.device = device
         self.reference_atoms = {}
         for data in dataset:
             atoms = deepcopy(data.x["atoms"])
-            atoms.calc = LennardJones(**predictor_config)
+            if name.lower() == "lennardjones":
+                atoms.calc = LennardJones(**predictor_config)
+            assert atoms.calc is not None
             self.reference_atoms[atoms.info["id"]] = atoms
 
     def predict(self, batch: List[Any]) -> dict:
@@ -168,6 +200,7 @@ class LennardJonesPropertiesPredictor:  # pylint: disable=R0903
             )
             if torch.isnan(forces_atoms).any() is False:
                 forces_atoms = torch.nan_to_num(forces_atoms)
+
             forces.append(forces_atoms)
             energies.append(energy_atoms)
 

@@ -143,9 +143,9 @@ class MixingNetwork(torch.nn.Module):
         max_radius: int,
         num_neighbors: int,
         num_nodes: int,
+        number_of_basis: int = 10,
         mul: int = 50,
         lmax: int = 2,
-        number_of_basis: int = 10,
         irreps_node_attr: int = "0e",
     ):
 

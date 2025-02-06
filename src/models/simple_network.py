@@ -16,31 +16,64 @@ from typing import Dict, Union
 # Third-party imports
 import torch
 from torch_geometric.data import Data
+from torch_scatter import scatter
 
-from e3nn.nn.models.v2103.gate_points_networks import SimpleNetwork
+# e3nn imports
+from e3nn import o3
+from e3nn.math import soft_one_hot_linspace
+from e3nn.nn.models.v2103.gate_points_message_passing import MessagePassing
 
 
-# pylint: disable=R0801
-class SimplePeriodicNetwork(SimpleNetwork):
+# pylint: disable=R0902, R0913, R0917
+class SimplePeriodicNetwork(torch.nn.Module):
     """
-    A network that adapts the SimpleNetwork class from e3nn to use a mean operation
-    instead of summing over atom contributions per example. It also adapts the
-    preprocess method for periodic boundary data.
+    A neural network for processing periodic data using the e3nn framework.
+
+    This class is a modified version of SimpleNetwork, specifically designed to
+    handle periodic boundary conditions. It overrides certain methods from
+    SimpleNetwork, including pooling strategies, to accommodate the periodic
+    nature of the input data.
     """
 
-    def __init__(self, **kwargs) -> None:
-        """
-        Initializes the SimplePeriodicNetwork.
+    def __init__(
+        self,
+        irreps_in,
+        irreps_out,
+        max_radius,
+        num_neighbors: int,
+        num_nodes: int,
+        number_of_basis: int = 10,
+        mul: int = 50,
+        layers: int = 3,
+        lmax: int = 2,
+        pool_nodes: bool = True,
+    ) -> None:
+        super().__init__()
+        self.lmax = lmax
+        self.max_radius = max_radius
+        self.number_of_basis = number_of_basis
+        self.num_nodes = num_nodes
+        self.pool_nodes = pool_nodes
+        assert pool_nodes is False
+        assert self.num_nodes == 1
 
-        Args:
-            kwargs (dict): Keyword arguments passed to the parent SimpleNetwork class.
-                - 'pool_nodes' determines whether to sum atom contributions or take the mean.
-                - 'num_nodes' is set to 1.0 for each example.
-        """
+        irreps_node_hidden = o3.Irreps(
+            [(mul, (l, p)) for l in range(lmax + 1) for p in [-1, 1]]
+        )
 
-        assert kwargs["pool_nodes"] is False
-        assert kwargs["num_nodes"] == 1.0
-        super().__init__(**kwargs)
+        self.mp = MessagePassing(
+            irreps_node_input=irreps_in,
+            irreps_node_hidden=irreps_node_hidden,
+            irreps_node_output=irreps_out,
+            irreps_node_attr="0e",
+            irreps_edge_attr=o3.Irreps.spherical_harmonics(lmax),
+            layers=layers,
+            fc_neurons=[self.number_of_basis, 100],
+            num_neighbors=num_neighbors,
+        )
+
+        self.irreps_in = self.mp.irreps_node_input
+        self.irreps_out = self.mp.irreps_node_output
 
     def preprocess(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """
@@ -84,19 +117,42 @@ class SimplePeriodicNetwork(SimpleNetwork):
 
     def forward(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """
-        Forward pass of the network. If `pool_nodes` is True, uses scatter_mean to
-        aggregate the output.
+        Perform a forward pass through the network.
 
         Args:
-            data (Union[Data, Dict[str, torch.Tensor]]): Input data for the network.
+            data (Union[Data, Dict[str, torch.Tensor]]): The input data containing
+            the node features,
+            edge attributes, and other necessary information for the model.
 
         Returns:
-            torch.Tensor: Output tensor after processing through the network.
+            torch.Tensor: The output of the network, which could either be a node feature tensor or
+            a pooled graph feature tensor, depending on whether pooling is enabled.
         """
-        output = super().forward(data)
+        batch, node_inputs, edge_src, edge_dst, edge_vec = self.preprocess(data)
+        del data
 
-        # if self.pool is True:  # Change to `is True`
-        #     return torch_scatter.scatter_mean(
-        #         output, data.batch, dim=0
-        #     )  # Take mean over atoms per example
-        return output
+        edge_attr = o3.spherical_harmonics(
+            range(self.lmax + 1), edge_vec, True, normalization="component"
+        )
+
+        # Edge length embedding
+        edge_length = edge_vec.norm(dim=1)
+        edge_length_embedding = soft_one_hot_linspace(
+            edge_length,
+            0.0,
+            self.max_radius,
+            self.number_of_basis,
+            basis="cosine",  # the cosine basis with cutoff = True goes to zero at max_radius
+            cutoff=True,  # no need for an additional smooth cutoff
+        ).mul(self.number_of_basis**0.5)
+
+        # Node attributes are not used here
+        node_attr = node_inputs.new_ones(node_inputs.shape[0], 1)
+
+        node_outputs = self.mp(
+            node_inputs, node_attr, edge_src, edge_dst, edge_attr, edge_length_embedding
+        )
+
+        if self.pool_nodes:
+            return scatter(node_outputs, batch, dim=0).div(self.num_nodes**0.5)
+        return node_outputs

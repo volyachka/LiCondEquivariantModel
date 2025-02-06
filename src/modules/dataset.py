@@ -2,12 +2,15 @@
 Dataset utilities and data processing for the SevenNet model.
 """
 
-# Standard imports
 # Standard library imports
+import os
+import json
+import pickle
 from copy import deepcopy
 from typing import Any, List, Tuple, Optional, Literal
 
 # Third-party imports
+import joblib
 import numpy as np
 import torch
 import pandas as pd
@@ -15,10 +18,11 @@ from sklearn.model_selection import train_test_split
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.loader.dataloader import Collater
+from ase.io import read
 from ase.neighborlist import NeighborList
 import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
-
+from modules.utils import get_cleaned_neighbours
 
 # First-party imports
 from modules.utils import query_mpid_structure
@@ -39,10 +43,59 @@ def build_dataloaders_from_dataset(
     train_dataset = [dataset[i] for i in train_indices]
     val_dataset = [dataset[i] for i in val_indices]
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
-
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
     return train_dataloader, val_dataloader
+
+
+def build_superionic_toy_dataset(  # pylint: disable=R0914
+    root_folder: str, clip_value: float, cutoff: float
+) -> List[Data]:
+    """
+    Constructs a dataset of atomic structures with diffusion properties
+    based on superionic toy inputs.
+    """
+    dataset = []
+
+    run_folder = os.path.join(root_folder, "runs")
+    slopes_file = os.path.join(root_folder, "slopes.json")
+
+    with open(slopes_file, "r", encoding="utf-8") as file:
+        slopes_info = json.load(file)
+
+    index = 0
+    for part in sorted(os.listdir(run_folder)):
+        path = os.path.join(run_folder, part)
+        for processes in os.listdir(path):
+            if ".output" not in processes:
+                relaxed_structure = read(
+                    os.path.join(path, processes, "relax_02.traj"), index=-1
+                )
+                calculator_path = os.path.join(path, processes, "atoms.pkl")
+                relaxed_structure.calc = joblib.load(calculator_path).calc
+
+                name = os.path.join(part, processes)
+                if name in slopes_info.keys():
+                    log_diffusion = {}
+                    for element, value in slopes_info[name].items():
+                        log_diffusion[element] = np.log10(max(clip_value, value))
+                    relaxed_structure.info["id"] = index
+                    relaxed_structure.info["name"] = name
+                    index += 1
+                    cuttofs = len(relaxed_structure.get_positions()) * [cutoff]
+                    nl = NeighborList(
+                        cuttofs, self_interaction=False, bothways=True, skin=0.5
+                    )
+                    dataset.append(
+                        Data(
+                            {
+                                "atoms": relaxed_structure,
+                                "log_diffusion": log_diffusion,
+                                "nl": nl,
+                            }
+                        )
+                    )
+    return dataset
 
 
 def build_dataset(  # pylint: disable=R0914
@@ -94,6 +147,8 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         use_energies: bool,
         num_noisy_configurations: int,
         upd_neigh_style: Literal["update_class", "call_func"],
+        predict_per_atom: bool,
+        clip_value: float,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -106,6 +161,8 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         self.use_displacements = use_displacements
         self.use_energies = use_energies
         self.upd_neigh_style = upd_neigh_style
+        self.predict_per_atom = predict_per_atom
+        self.clip_value = clip_value
 
         assert self.upd_neigh_style in {"update_class", "call_func"}
 
@@ -134,12 +191,12 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
             noises.append(new_atoms)
         return noises
 
-    def transit(  # pylint: disable=R0913, R0914, E0606
+    def transit(  # pylint: disable=R0913, R0914, R0915, E0606
         self,
         *,
         masses_batch: list[np.ndarray],
         atoms_batch: list[MSONAtoms],
-        noise_structures_batch: list[MSONAtoms],
+        noise_structure_batch: list[MSONAtoms],
         forces_batch: list[torch.Tensor],
         energy_batch: list[torch.Tensor],
         log_diffusion_batch: list[float],
@@ -153,7 +210,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         for (
             mass,
             initial_atoms,
-            noise_structures,
+            noise_structure,
             forces,
             energy,
             log_diffusion,
@@ -161,7 +218,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         ) in zip(
             masses_batch,
             atoms_batch,
-            noise_structures_batch,
+            noise_structure_batch,
             forces_batch,
             energy_batch,
             log_diffusion_batch,
@@ -174,63 +231,61 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 .type(forces_batch[0].dtype)
             )
 
+            assert torch.isnan(forces).any().item() is False
+
             if self.forces_divided_by_mass:
                 forces_divided_by_mass = forces / mass[:, None]
                 forces_divided_by_mass_mag = forces_divided_by_mass.norm(
                     dim=1, keepdim=True
                 )
+
+                assert torch.isnan(forces_divided_by_mass_mag).any().item() is False
+
                 factor = (
                     torch.log(1.0 + 1000.0 * forces_divided_by_mass_mag)
                     / forces_divided_by_mass_mag
                 )
+
                 value = factor * forces_divided_by_mass
+
+                if torch.isnan(factor).any().item():
+                    file_name = "_".join(initial_atoms.info["name"].split("/")) + ".pkl"
+                    file_path = os.path.join(
+                        "/mnt/hdd/turchina/damaged_structures", file_name
+                    )
+
+                    with open(file_path, "wb") as file:
+                        atoms_dict = initial_atoms.todict()
+                        pickle.dump(atoms_dict, file)
             else:
                 forces_mag = forces.norm(dim=1, keepdim=True)
                 factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
                 value = factor * forces
-                assert torch.isnan(value).any().item() is False
 
-            pos = noise_structures.get_positions()
-            lattice = noise_structures.cell.array
+            value = torch.nan_to_num(value)
 
-            if self.upd_neigh_style == "update_class":
+            match self.upd_neigh_style:
+                case "update_class":
+                    self.nl_builders[index].update(noise_structure)
 
-                self.nl_builders[index].update(noise_structures)
-
-                src = []
-                dst = []
-                vec = []
-
-                for i_atom, _ in enumerate(initial_atoms.symbols):
-                    neighbor_ids, offsets = self.nl_builders[index].get_neighbors(
-                        i_atom
+                    edge_src, edge_dst = get_cleaned_neighbours(
+                        self.nl_builders[index], noise_structure, self.cutoff
                     )
-                    rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
-                    suitable_neigh = np.linalg.norm(rr, axis=1) <= self.cutoff
-                    neighbor_ids = neighbor_ids[suitable_neigh]
-                    offsets = offsets[suitable_neigh]
-                    rr = rr[suitable_neigh]
 
-                    src.append(np.ones(len(neighbor_ids)) * i_atom)
-                    dst.append(neighbor_ids)
-                    vec.append(rr)
+                case "call_func":
+                    edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
+                        "ijS",
+                        a=noise_structure,
+                        cutoff=self.cutoff,
+                        self_interaction=True,
+                    )
 
-                edge_vec = np.vstack(vec)
-                edge_dst = np.concatenate(dst)
-                edge_src = np.concatenate(src)
-
-            elif self.upd_neigh_style == "call_func":
-                edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
-                    "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
-                )
-
-                edge_vec = pos[edge_dst] - pos[edge_src] + (edge_shift @ lattice)
-            else:
-                raise NotImplementedError(self.upd_neigh_style)
+                case _:
+                    raise NotImplementedError(self.upd_neigh_style)
 
             if self.use_displacements:
                 shift = torch.tensor(
-                    noise_structures.get_positions() - initial_atoms.get_positions(),
+                    noise_structure.get_positions() - initial_atoms.get_positions(),
                     dtype=torch.float32,
                     device=value.device,
                 )
@@ -240,45 +295,44 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
             edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
-                "ijS", a=noise_structures, cutoff=self.cutoff, self_interaction=True
+                "ijS", a=noise_structure, cutoff=self.cutoff, self_interaction=True
             )
 
-            # data = Data(
-            #     pos=torch.tensor(noise_structures.get_positions(), dtype=torch.float32),
-            #     x=value,
-            #     lattice=torch.tensor(
-            #         noise_structures.cell.array, dtype=torch.float32
-            #     ).unsqueeze(0),
-            #     edge_index=torch.stack(
-            #         [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
-            #     ),
-            #     edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
-            #     target=torch.tensor(log_diffusion, dtype=torch.float32),
-            # )
+            if self.predict_per_atom:
+                target = torch.full(
+                    (forces.shape[0],), self.clip_value, device=value.device
+                )
+                symbols = np.array(noise_structure.get_chemical_symbols())
+
+                if isinstance(log_diffusion, dict):
+                    for element, diffusion in log_diffusion.items():
+                        mask = symbols == element
+                        target[mask] = diffusion
+                else:
+                    mask = symbols == "Li"
+                    target[mask] = log_diffusion
+            else:
+                target = torch.tensor(
+                    log_diffusion, dtype=torch.float32, device=value.device
+                )
+
+            assert torch.isnan(value).any().item() is False
 
             data = Data(
                 pos=torch.tensor(
-                    noise_structures.get_positions(),
+                    noise_structure.get_positions(),
                     dtype=torch.float32,
                     device=value.device,
                 ),
                 x=value,
-                edge_src=torch.LongTensor(deepcopy(edge_src)),
-                edge_dst=torch.LongTensor(deepcopy(edge_dst)),
-                edge_vec=torch.tensor(
-                    edge_vec, dtype=torch.float32, device=value.device
-                ),
-                target=torch.tensor(
-                    log_diffusion, dtype=torch.float32, device=value.device
-                ),
+                y=target,
                 lattice=torch.tensor(
-                    noise_structures.cell.array, dtype=torch.float32
+                    noise_structure.cell.array, dtype=torch.float32
                 ).unsqueeze(0),
                 edge_index=torch.stack(
                     [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
                 ),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
-                symbols=np.array(noise_structures.get_chemical_symbols()),
             )
 
             atoms_list.append(data)
@@ -318,10 +372,10 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 self.num_noisy_configurations * [data.x["atoms"].info["id"]]
             )
 
-        noise_structures_batch = self.set_noise_to_structures(atoms_batch)
+        noise_structure_batch = self.set_noise_to_structures(atoms_batch)
 
         with torch.enable_grad():
-            properites = self.properties_predictor.predict(noise_structures_batch)
+            properites = self.properties_predictor.predict(noise_structure_batch)
         forces_batch = properites["forces"]
         energy_batch = properites["energy"]
 
@@ -344,7 +398,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         graphs_batch = self.transit(
             masses_batch=masses_batch,
             atoms_batch=atoms_batch,
-            noise_structures_batch=noise_structures_batch,
+            noise_structure_batch=noise_structure_batch,
             forces_batch=forces_batch,
             energy_batch=energy_batch,
             log_diffusion_batch=log_diffusion_batch,
