@@ -11,7 +11,6 @@ import yaml
 
 from models.mixing_network import MixingNetwork
 from models.simple_network import SimplePeriodicNetwork
-from models.baseline_network import BaselineSimplePeriodicNetwork
 from modules.property_prediction import (
     SevenNetPropertiesPredictor,
     AseCalculatorPropertiesPredictor,
@@ -85,6 +84,7 @@ def main():
         )
     else:
         raise NotImplementedError()
+
     match property_predictor_name:
         case "sevennet":
             predictor = SevenNetPropertiesPredictor(
@@ -152,36 +152,34 @@ def main():
     else:
         irreps_out = "1x0e"
 
-    if config["model"]["baseline"]:
-        net = BaselineSimplePeriodicNetwork(
+    if config["model"]["mix_properites"]:
+        net = MixingNetwork(
             irreps_in=irreps_in,
             irreps_out=irreps_out,
             max_radius=config["model"]["radial_cutoff"],
             num_neighbors=config["model"]["num_neighbors"],
+            num_nodes=config["model"]["num_nodes"],
+            number_of_basis=config["model"]["number_of_basis"],
+            mul=config["model"]["mul"],
+            layers=config["model"]["layers"],
+            lmax=config["model"]["lmax"],
+            fc_neurons=config["model"]["fc_neurons"],
+            pool_nodes=config["model"]["pool_nodes"],
         )
     else:
-        if config["model"]["mix_properites"]:
-            net = MixingNetwork(
-                layers=config["model"]["layers"],
-                irreps_in=irreps_in,
-                irreps_out=irreps_out,
-                pool_nodes=config["model"]["pool_nodes"],
-                max_radius=config["model"]["radial_cutoff"],
-                num_neighbors=config["model"]["num_neighbors"],
-                num_nodes=config["model"]["num_nodes"],
-                number_of_basis=config["model"]["number_of_basis"],
-            )
-        else:
-            net = SimplePeriodicNetwork(
-                layers=config["model"]["layers"],
-                irreps_in=irreps_in,
-                irreps_out=irreps_out,
-                pool_nodes=config["model"]["pool_nodes"],
-                max_radius=config["model"]["radial_cutoff"],
-                num_neighbors=config["model"]["num_neighbors"],
-                num_nodes=config["model"]["num_nodes"],
-                number_of_basis=config["model"]["number_of_basis"],
-            )
+        net = SimplePeriodicNetwork(
+            irreps_in=irreps_in,
+            irreps_out=irreps_out,
+            max_radius=config["model"]["radial_cutoff"],
+            num_neighbors=config["model"]["num_neighbors"],
+            num_nodes=config["model"]["num_nodes"],
+            number_of_basis=config["model"]["number_of_basis"],
+            mul=config["model"]["mul"],
+            layers=config["model"]["layers"],
+            lmax=config["model"]["lmax"],
+            fc_neurons=config["model"]["fc_neurons"],
+            pool_nodes=config["model"]["pool_nodes"],
+        )
 
     config["model"]["number_of_parameters"] = sum(p.numel() for p in net.parameters())
     # Create a Trainer instance and train the model

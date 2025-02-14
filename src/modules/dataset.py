@@ -321,6 +321,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 ),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
                 symbols=np.array(noise_structure.get_chemical_symbols()),
+                index=index,
             )
 
             atoms_list.append(data)

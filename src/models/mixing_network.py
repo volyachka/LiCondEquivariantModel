@@ -136,28 +136,30 @@ class MixingNetwork(torch.nn.Module):
 
     def __init__(
         self,
-        layers: int,
-        irreps_in: str,
-        irreps_out: str,
-        pool_nodes: bool,
-        max_radius: int,
+        irreps_in,
+        irreps_out,
+        max_radius,
         num_neighbors: int,
         num_nodes: int,
-        number_of_basis: int = 10,
-        mul: int = 50,
-        lmax: int = 2,
-        irreps_node_attr: int = "0e",
+        number_of_basis: int,
+        mul: int,
+        layers: int,
+        lmax: int,
+        fc_neurons: list,
+        pool_nodes: bool,
     ):
-
-        assert pool_nodes is False
 
         self.lmax = lmax
         self.max_radius = max_radius
         self.number_of_basis = number_of_basis
         self.num_nodes = num_nodes
-        self.num_neighbors = num_neighbors
         self.pool_nodes = pool_nodes
-        self.irreps_node_attr = irreps_node_attr
+        assert pool_nodes is False
+        assert self.num_nodes == 1
+        assert self.fc_neurons[0] == self.number_of_basis
+        irreps_node_hidden = o3.Irreps(
+            [(mul, (l, p)) for l in range(lmax + 1) for p in [-1, 1]]
+        )
 
         irreps_node_hidden = o3.Irreps(
             [(mul, (l, p)) for l in range(lmax + 1) for p in [-1, 1]]
@@ -175,7 +177,7 @@ class MixingNetwork(torch.nn.Module):
                     irreps_node_hidden=irreps_node_hidden,
                     irreps_node_attr=self.irreps_node_attr,
                     irreps_edge_attr=irreps_edge_attr,
-                    fc_neurons=[self.number_of_basis, 100],
+                    fc_neurons=fc_neurons,
                     num_neighbors=self.num_neighbors,
                 )
             )
@@ -190,8 +192,8 @@ class MixingNetwork(torch.nn.Module):
             self.irreps_node_attr,
             irreps_edge_attr,
             irreps_node_output,
-            [self.number_of_basis, 100],
-            num_neighbors,
+            fc_neurons=self.fc_neurons,
+            num_neighbors=num_neighbors,
         )
 
     def preprocess(self, data: Union[Data, Dict[str, torch.Tensor]]) -> torch.Tensor:
@@ -220,17 +222,6 @@ class MixingNetwork(torch.nn.Module):
                 "ni,nij->nj", data["edge_shift"], data["lattice"][edge_batch]
             )
         )
-
-        # assert torch.allclose(edge_vec, data["edge_vec"], atol=1e-3, rtol=1e-5)
-        # assert torch.allclose(edge_src, data["edge_src"], atol=1e-3, rtol=1e-5)
-        # assert torch.allclose(edge_dst, data["edge_dst"], atol=1e-3, rtol=1e-5)
-        # return (
-        #     data["batch"],
-        #     data["x"],
-        #     data["edge_src"],
-        #     data["edge_dst"],
-        #     data["edge_vec"],
-        # )
 
         return batch, data["x"], edge_src, edge_dst, edge_vec
 

@@ -117,30 +117,35 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
     def _thorough_validation(self, dataloader):
         y_pred_agg = []
         for _ in range(20):
-            preds = []
-            labels = []
+            preds_epoch = []
+            indexes_epoch = []
             with torch.set_grad_enabled(False):
                 for data, num_atoms in tqdm(dataloader):
-                    _, batch_y_true, batch_y_pred, _ = self._process_batch(
+                    _, _, batch_y_pred, _ = self._process_batch(
                         data, num_atoms, train=False
                     )
-                    preds.extend(batch_y_pred)
-                    labels.extend(batch_y_true)
+                    preds_epoch.extend(batch_y_pred)
+                    indexes_epoch.extend(data["index"])
 
-            y_pred_agg.append(preds)
+            preds_epoch = torch.stack(preds_epoch).cpu().detach().numpy()
+            indexes_epoch = torch.stack(indexes_epoch).cpu().detach().numpy()
+            indexes_epoch = np.argsort(indexes_epoch)
+            y_pred_agg.append(preds_epoch[indexes_epoch])
 
-        y_pred = (
-            torch.stack([torch.stack(p) for p in y_pred_agg], dim=0)
-            .mean(axis=0)
-            .cpu()
-            .detach()
-            .numpy()
-        )
+        y_pred = np.vstack(y_pred_agg).mean(axis=0)
 
         y_true = (
             torch.concatenate([i.y.cpu() for i, _ in dataloader]).cpu().detach().numpy()
         )[:: self.config["training"]["num_noisy_configurations"]]
 
+        y_true_idx = (
+            torch.concatenate([i.index.cpu() for i, _ in dataloader])
+            .cpu()
+            .detach()
+            .numpy()
+        )[:: self.config["training"]["num_noisy_configurations"]]
+
+        y_true = y_true[np.argsort(y_true_idx)]
         val_thorough_r2 = r2_score(y_true, y_pred)
         val_thorough_loss = mean_squared_error(y_true, y_pred)
 
@@ -339,7 +344,6 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         val_losses = []
 
         for epoch in range(1, self.num_epochs + 1):
-
             if self.predict_per_atom:
                 (
                     avg_li_train_loss,

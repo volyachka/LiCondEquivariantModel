@@ -42,11 +42,12 @@ class SimplePeriodicNetwork(torch.nn.Module):
         max_radius,
         num_neighbors: int,
         num_nodes: int,
-        number_of_basis: int = 10,
-        mul: int = 50,
-        layers: int = 3,
-        lmax: int = 2,
-        pool_nodes: bool = True,
+        number_of_basis: int,
+        mul: int,
+        layers: int,
+        lmax: int,
+        fc_neurons: list,
+        pool_nodes: bool,
     ) -> None:
         super().__init__()
         self.lmax = lmax
@@ -56,7 +57,7 @@ class SimplePeriodicNetwork(torch.nn.Module):
         self.pool_nodes = pool_nodes
         assert pool_nodes is False
         assert self.num_nodes == 1
-
+        assert fc_neurons[0] == self.number_of_basis
         irreps_node_hidden = o3.Irreps(
             [(mul, (l, p)) for l in range(lmax + 1) for p in [-1, 1]]
         )
@@ -68,7 +69,7 @@ class SimplePeriodicNetwork(torch.nn.Module):
             irreps_node_attr="0e",
             irreps_edge_attr=o3.Irreps.spherical_harmonics(lmax),
             layers=layers,
-            fc_neurons=[self.number_of_basis],
+            fc_neurons=fc_neurons,
             num_neighbors=num_neighbors,
         )
 
@@ -92,7 +93,6 @@ class SimplePeriodicNetwork(torch.nn.Module):
         edge_src = data["edge_index"][0]  # Edge source
         edge_dst = data["edge_index"][1]  # Edge destination
 
-        # Compute relative distances + unit cell shifts for periodic boundaries
         edge_batch = batch[edge_src]
         edge_vec = (
             data["pos"][edge_dst]
@@ -101,17 +101,6 @@ class SimplePeriodicNetwork(torch.nn.Module):
                 "ni,nij->nj", data["edge_shift"], data["lattice"][edge_batch]
             )
         )
-
-        # assert torch.allclose(edge_vec, data["edge_vec"], atol=1e-3, rtol=1e-5)
-        # assert torch.allclose(edge_src, data["edge_src"], atol=1e-3, rtol=1e-5)
-        # assert torch.allclose(edge_dst, data["edge_dst"], atol=1e-3, rtol=1e-5)
-        # return (
-        #     data["batch"],
-        #     data["x"],
-        #     data["edge_src"],
-        #     data["edge_dst"],
-        #     data["edge_vec"],
-        # )
 
         return batch, data["x"], edge_src, edge_dst, edge_vec
 
