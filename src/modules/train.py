@@ -4,6 +4,8 @@ Handles data loading, processing, training, and evaluation.
 """
 
 import os
+import numpy as np
+
 import torch
 import torch_scatter
 from torch import nn, optim
@@ -12,7 +14,7 @@ from tqdm import tqdm
 import wandb
 
 
-class Trainer:  # pylint: disable=R0902
+class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
     """
     Trainer class for managing model training and validation.
 
@@ -70,6 +72,7 @@ class Trainer:  # pylint: disable=R0902
             self.mode = "softmax_within_configurations"
 
         self.predict_importance = self.config["model"]["predict_importance"]
+        self.predict_per_atom = self.config["training"]["predict_per_atom"]
 
         if config["wandb"]["verbose"]:
             tags = []
@@ -115,13 +118,15 @@ class Trainer:  # pylint: disable=R0902
         y_pred_agg = []
         for _ in range(20):
             preds = []
-
+            labels = []
             with torch.set_grad_enabled(False):
                 for data, num_atoms in tqdm(dataloader):
-                    _, _, batch_y_pred, _ = self._process_batch(
+                    _, batch_y_true, batch_y_pred, _ = self._process_batch(
                         data, num_atoms, train=False
                     )
                     preds.extend(batch_y_pred)
+                    labels.extend(batch_y_true)
+
             y_pred_agg.append(preds)
 
         y_pred = (
@@ -134,7 +139,7 @@ class Trainer:  # pylint: disable=R0902
 
         y_true = (
             torch.concatenate([i.y.cpu() for i, _ in dataloader]).cpu().detach().numpy()
-        )
+        )[:: self.config["training"]["num_noisy_configurations"]]
 
         val_thorough_r2 = r2_score(y_true, y_pred)
         val_thorough_loss = mean_squared_error(y_true, y_pred)
@@ -242,7 +247,7 @@ class Trainer:  # pylint: disable=R0902
 
         assert torch.equal(idx_1, idx_2)
 
-        if self.config["training"]["predict_per_atom"]:
+        if self.predict_per_atom:
             final_predictions = intermediate_predictions.squeeze()
         else:
             final_predictions = torch_scatter.scatter_mean(
@@ -273,6 +278,9 @@ class Trainer:  # pylint: disable=R0902
         total_loss = 0.0
         num_samples = 0
         y_true, y_pred = [], []
+        if self.predict_per_atom:
+            li_true, li_pred = [], []
+
         entropy = []
 
         with torch.set_grad_enabled(train):
@@ -280,8 +288,17 @@ class Trainer:  # pylint: disable=R0902
                 batch_loss, batch_y_true, batch_y_pred, batch_entropy = (
                     self._process_batch(data, num_atoms, train=train)
                 )
-                total_loss += batch_loss * len(batch_y_true)
-                num_samples += len(batch_y_true)
+
+                if self.predict_per_atom:
+                    li_mask = np.concatenate(data["symbols"]) == "Li"
+                    li_true.extend(batch_y_true[li_mask])
+                    li_pred.extend(batch_y_pred[li_mask])
+                    total_loss += batch_loss * sum(num_atoms)
+                    num_samples += sum(num_atoms)
+                else:
+                    total_loss += batch_loss * len(num_atoms)
+                    num_samples += len(num_atoms)
+
                 y_true.extend(batch_y_true)
                 y_pred.extend(batch_y_pred)
                 entropy.extend(batch_entropy)
@@ -290,10 +307,21 @@ class Trainer:  # pylint: disable=R0902
         y_pred = torch.stack(y_pred).cpu().detach().numpy()
         entropy = torch.stack(entropy).cpu().detach().numpy()
 
-        r2 = r2_score(y_true, y_pred)
+        if self.predict_per_atom:
+            li_true = torch.stack(li_true).cpu().detach()
+            li_pred = torch.stack(li_pred).cpu().detach()
+
+            li_avg_loss = self.criterion(li_pred, li_true)
+
+            li_r2 = r2_score(li_true.numpy(), li_pred.numpy())
+
         avg_loss = total_loss / num_samples
 
         mean_entropy = entropy.mean()
+        r2 = r2_score(y_true, y_pred)
+
+        if self.predict_per_atom:
+            return li_avg_loss, avg_loss, li_r2, r2, mean_entropy
 
         return avg_loss, r2, mean_entropy
 
@@ -311,10 +339,24 @@ class Trainer:  # pylint: disable=R0902
         val_losses = []
 
         for epoch in range(1, self.num_epochs + 1):
-            avg_train_loss, r2_train, entropy_train = self.train_epoch()
-            train_losses.append(avg_train_loss)
 
-            avg_val_loss, r2_val, entropy_val = self.validate_epoch()
+            if self.predict_per_atom:
+                (
+                    avg_li_train_loss,
+                    avg_train_loss,
+                    li_r2_train,
+                    r2_train,
+                    entropy_train,
+                ) = self.train_epoch()
+
+                avg_li_val_loss, avg_val_loss, li_r2_val, r2_val, entropy_val = (
+                    self.validate_epoch()
+                )
+            else:
+                avg_train_loss, r2_train, entropy_train = self.train_epoch()
+                avg_val_loss, r2_val, entropy_val = self.validate_epoch()
+
+            train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
 
             if self.config["wandb"]["verbose"]:
@@ -330,10 +372,16 @@ class Trainer:  # pylint: disable=R0902
                     info["entropy_train"] = entropy_train
                     info["entropy_val"] = entropy_val
 
-                if (
-                    self.config["training"]["num_noisy_configurations"] == 1
-                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
-                    == 0
+                if self.predict_per_atom:
+                    info["avg_li_train_loss"] = avg_li_train_loss
+                    info["avg_li_val_loss"] = avg_li_val_loss
+                    info["li_r2_train"] = li_r2_train
+                    info["li_r2_val"] = li_r2_val
+
+                if self.config["training"][
+                    "num_noisy_configurations"
+                ] == 1 and epoch % self.training_config.get(
+                    "save_model_every_n_epochs", 1
                 ):
                     thorough_train_loss, thorough_train_r2, _, _ = (
                         self._thorough_validation(self.train_dataloader)

@@ -104,7 +104,7 @@ def get_cleaned_neighbours(
 
     src = []
     dst = []
-    vec = []
+    shifts = []
 
     for i_atom, _ in enumerate(noise_structure.symbols):
         neighbor_ids, offsets = nl_builder.get_neighbors(i_atom)
@@ -118,9 +118,9 @@ def get_cleaned_neighbours(
 
         src.append(np.ones(len(neighbor_ids)) * i_atom)
         dst.append(neighbor_ids)
-        vec.append(rr)
+        shifts.append(offsets)
 
-    edge_dst = np.concatenate(dst)
-    edge_src = np.concatenate(src)
-
-    return edge_src, edge_dst
+    edge_dst = np.concatenate(dst).astype(np.int64)
+    edge_src = np.concatenate(src).astype(np.int64)
+    shifts = np.concatenate(shifts).astype(np.int64)
+    return edge_src, edge_dst, shifts

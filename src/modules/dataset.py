@@ -5,7 +5,6 @@ Dataset utilities and data processing for the SevenNet model.
 # Standard library imports
 import os
 import json
-import pickle
 from copy import deepcopy
 from typing import Any, List, Tuple, Optional, Literal
 
@@ -44,7 +43,7 @@ def build_dataloaders_from_dataset(
     val_dataset = [dataset[i] for i in val_indices]
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     return train_dataloader, val_dataloader
 
 
@@ -67,7 +66,9 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
     for part in sorted(os.listdir(run_folder)):
         path = os.path.join(run_folder, part)
         for processes in os.listdir(path):
-            if ".output" not in processes:
+            if processes == ".gitignore":
+                continue
+            if ".output" not in processes and ".dvc" not in processes:
                 relaxed_structure = read(
                     os.path.join(path, processes, "relax_02.traj"), index=-1
                 )
@@ -82,9 +83,9 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
                     relaxed_structure.info["id"] = index
                     relaxed_structure.info["name"] = name
                     index += 1
-                    cuttofs = len(relaxed_structure.get_positions()) * [cutoff]
+                    cuttofs = len(relaxed_structure.get_positions()) * [cutoff / 2]
                     nl = NeighborList(
-                        cuttofs, self_interaction=False, bothways=True, skin=0.5
+                        cuttofs, self_interaction=True, bothways=False, skin=0.5
                     )
                     dataset.append(
                         Data(
@@ -123,7 +124,7 @@ def build_dataset(  # pylint: disable=R0914
         )
 
         cuttofs = len(atoms.get_positions()) * [cutoff]
-        nl = NeighborList(cuttofs, self_interaction=False, bothways=True, skin=0.5)
+        nl = NeighborList(cuttofs, self_interaction=True, bothways=True, skin=0.5)
 
         dataset.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
 
@@ -231,8 +232,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 .type(forces_batch[0].dtype)
             )
 
-            assert torch.isnan(forces).any().item() is False
-
             if self.forces_divided_by_mass:
                 forces_divided_by_mass = forces / mass[:, None]
                 forces_divided_by_mass_mag = forces_divided_by_mass.norm(
@@ -247,28 +246,20 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                 )
 
                 value = factor * forces_divided_by_mass
+                value = torch.nan_to_num(value)
 
-                if torch.isnan(factor).any().item():
-                    file_name = "_".join(initial_atoms.info["name"].split("/")) + ".pkl"
-                    file_path = os.path.join(
-                        "/mnt/hdd/turchina/damaged_structures", file_name
-                    )
-
-                    with open(file_path, "wb") as file:
-                        atoms_dict = initial_atoms.todict()
-                        pickle.dump(atoms_dict, file)
             else:
                 forces_mag = forces.norm(dim=1, keepdim=True)
                 factor = torch.log(1.0 + 100.0 * forces_mag) / forces_mag
                 value = factor * forces
 
-            value = torch.nan_to_num(value)
+                value = torch.nan_to_num(value)
 
             match self.upd_neigh_style:
                 case "update_class":
                     self.nl_builders[index].update(noise_structure)
 
-                    edge_src, edge_dst = get_cleaned_neighbours(
+                    edge_src, edge_dst, edge_shift = get_cleaned_neighbours(
                         self.nl_builders[index], noise_structure, self.cutoff
                     )
 
@@ -293,10 +284,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
 
             if self.use_energies:
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
-
-            edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
-                "ijS", a=noise_structure, cutoff=self.cutoff, self_interaction=True
-            )
 
             if self.predict_per_atom:
                 target = torch.full(
@@ -333,6 +320,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
                     [torch.LongTensor(edge_src), torch.LongTensor(edge_dst)], dim=0
                 ),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
+                symbols=np.array(noise_structure.get_chemical_symbols()),
             )
 
             atoms_list.append(data)
@@ -373,9 +361,9 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
             )
 
         noise_structure_batch = self.set_noise_to_structures(atoms_batch)
-
         with torch.enable_grad():
             properites = self.properties_predictor.predict(noise_structure_batch)
+
         forces_batch = properites["forces"]
         energy_batch = properites["energy"]
 

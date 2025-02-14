@@ -6,71 +6,60 @@ approach for neighbor list construction and a function-based approach to
 check if the generated edge sources and destinations match.
 """
 
-import ase.io
-from ase.neighborlist import NeighborList
-from modules.utils import get_cleaned_neighbours
+import networkx as nx
+
+from torch_geometric.utils import to_networkx
+from torch_geometric.loader import DataLoader
+
+from modules.property_prediction import RandomPropertiesPredictor
+from modules.dataset import AtomsToGraphCollater
 
 
-def test_graph_building_1(dataset):
+def test_graph_building(dataset):
     """
     Test the neighbor list construction for atomic structures with a
-    specified cutoff of 0.5 using class-based neighbor list generation.
+    specified cutoff of 5 using class-based neighbor list generation.
 
     This test compares the edge source and destination indices from the
     `get_cleaned_neighbours` function and the `ase.neighborlist.neighbor_list`
-    function, ensuring that they are identical with skin = 0 and cutoff = None.
+    function, ensuring that they are identical with skin = 1 and cutoff = 5
     """
 
-    structures = [data.x["atoms"] for data in dataset]
-    cutoff = 0.5
-    for structure in structures:
-        cuttofs = len(structure.get_positions()) * [cutoff / 2]
-        nl_builder = NeighborList(
-            cuttofs, self_interaction=True, bothways=False, skin=0
-        )
+    dataloader_func = DataLoader(dataset, batch_size=1, shuffle=False)
+    dataloader_class = DataLoader(dataset, batch_size=1, shuffle=False)
 
-        edge_src_class, edge_dst_class = get_cleaned_neighbours(
-            nl_builder, structure, cutoff=None
-        )
+    predictor = RandomPropertiesPredictor("cuda")
 
-        edge_src_func, edge_dst_func, _ = ase.neighborlist.neighbor_list(
-            "ijS",
-            a=structure,
-            cutoff=cutoff,
-            self_interaction=True,
-        )
+    dataloader_func.collate_fn = AtomsToGraphCollater(
+        dataset=dataset,
+        cutoff=5,
+        noise_std=0,
+        properties_predictor=predictor,
+        forces_divided_by_mass=True,
+        num_noisy_configurations=1,
+        use_displacements=False,
+        use_energies=False,
+        upd_neigh_style="call_func",
+        predict_per_atom=False,
+        clip_value=0.01,
+    )
 
-        assert edge_src_class.shape == edge_src_func.shape
-        assert edge_dst_class.shape == edge_dst_func.shape
+    dataloader_class.collate_fn = AtomsToGraphCollater(
+        dataset=dataset,
+        cutoff=5,
+        noise_std=0,
+        properties_predictor=predictor,
+        forces_divided_by_mass=True,
+        num_noisy_configurations=1,
+        use_displacements=False,
+        use_energies=False,
+        upd_neigh_style="update_class",
+        predict_per_atom=False,
+        clip_value=0.01,
+    )
 
+    for [data_class, _], [data_func, _] in zip(dataloader_func, dataloader_class):
+        data_class = to_networkx(data_class.to_data_list()[0])
+        data_func = to_networkx(data_func.to_data_list()[0])
 
-def test_graph_building_2(dataset):
-    """
-    Test the neighbor list construction for atomic structures with a
-    specified cutoff of 0.5 using class-based neighbor list generation.
-
-    This test compares the edge source and destination indices from the
-    `get_cleaned_neighbours` function and the `ase.neighborlist.neighbor_list`
-    function, ensuring that they are identical with skin = 1 and cutoff = 0.5
-    """
-    structures = [data.x["atoms"] for data in dataset]
-    cutoff = 0.5
-    for structure in structures:
-        cuttofs = len(structure.get_positions()) * [cutoff / 2]
-        nl_builder = NeighborList(
-            cuttofs, self_interaction=True, bothways=False, skin=1
-        )
-
-        edge_src_class, edge_dst_class = get_cleaned_neighbours(
-            nl_builder, structure, cutoff
-        )
-
-        edge_src_func, edge_dst_func, _ = ase.neighborlist.neighbor_list(
-            "ijS",
-            a=structure,
-            cutoff=cutoff,
-            self_interaction=True,
-        )
-
-        assert edge_src_class.shape == edge_src_func.shape
-        assert edge_dst_class.shape == edge_dst_func.shape
+        assert nx.is_isomorphic(data_class, data_func)

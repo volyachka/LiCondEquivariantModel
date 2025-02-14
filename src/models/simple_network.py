@@ -68,7 +68,7 @@ class SimplePeriodicNetwork(torch.nn.Module):
             irreps_node_attr="0e",
             irreps_edge_attr=o3.Irreps.spherical_harmonics(lmax),
             layers=layers,
-            fc_neurons=[self.number_of_basis, 100],
+            fc_neurons=[self.number_of_basis],
             num_neighbors=num_neighbors,
         )
 
