@@ -84,7 +84,7 @@ def main():
         )
     else:
         raise NotImplementedError()
-
+    
     match property_predictor_name:
         case "sevennet":
             predictor = SevenNetPropertiesPredictor(
@@ -95,6 +95,7 @@ def main():
             predictor = AseCalculatorPropertiesPredictor(
                 device, property_predictor_name, property_config, dataset
             )
+
         case "random":
             predictor = RandomPropertiesPredictor(device)
         case _:

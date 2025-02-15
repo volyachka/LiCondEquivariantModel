@@ -98,6 +98,42 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
                     )
     return dataset
 
+def build_datasets_with_random(  # pylint: disable=R0914
+    csv_path: str, li_column: str, temp: int, clip_value: float, cutoff: float) -> List[Data]:
+    """
+    Builds a dataset from a CSV file by processing and filtering data based on specified parameters.
+    """
+    df = pd.read_csv(csv_path)
+    df[li_column] = df[li_column].clip(lower=clip_value)
+    mpids = df[df["temperature"] == temp]["mpid"].to_list()
+    docs = query_mpid_structure(mpids=mpids)
+
+    random_labels = pd.read_csv('data/mpids_random30.txt').iloc[:, 0].tolist()
+    sevennet_labels = pd.read_csv('data/mpids_sorted.txt').iloc[:100, 0].tolist()
+    random_labels = set(random_labels) - set(sevennet_labels)
+
+    dataset_main = []
+    dataset_random = []
+    for index, doc in enumerate(docs):
+        material_id = doc["material_id"]
+        structure = doc["structure"]
+
+        atoms = AseAtomsAdaptor.get_atoms(structure)
+        atoms.info["id"] = index
+        log_diffusion = np.log10(
+            df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
+                li_column
+            ].iloc[0]
+        )
+
+        cuttofs = len(atoms.get_positions()) * [cutoff]
+        nl = NeighborList(cuttofs, self_interaction=True, bothways=True, skin=0.5)
+
+        if material_id not in random_labels:
+            dataset_main.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
+        else:
+            dataset_random.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
+    return dataset_main, dataset_random
 
 def build_dataset(  # pylint: disable=R0914
     csv_path: str, li_column: str, temp: int, clip_value: float, cutoff: float
@@ -400,3 +436,5 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         assert (atoms_reference_positions == atoms_positions_should_be_unchanged).all()
 
         return super().__call__(graphs_batch), num_atoms
+
+

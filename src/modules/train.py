@@ -134,18 +134,18 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
 
         y_pred = np.vstack(y_pred_agg).mean(axis=0)
 
-        y_true = (
-            torch.concatenate([i.y.cpu() for i, _ in dataloader]).cpu().detach().numpy()
-        )[:: self.config["training"]["num_noisy_configurations"]]
+        y_true = []
+        idx_true = []
 
-        y_true_idx = (
-            torch.concatenate([i.index.cpu() for i, _ in dataloader])
-            .cpu()
-            .detach()
-            .numpy()
-        )[:: self.config["training"]["num_noisy_configurations"]]
+        for i, _ in dataloader:
+            y_true.append(i.y)
+            idx_true.append(i.index)
 
-        y_true = y_true[np.argsort(y_true_idx)]
+        y_true = torch.concatenate(y_true).cpu().detach().numpy()[:: self.config["training"]["num_noisy_configurations"]]
+        idx_true = torch.concatenate(idx_true).cpu().detach().numpy()[:: self.config["training"]["num_noisy_configurations"]]
+
+        y_true = y_true[np.argsort(idx_true)]
+
         val_thorough_r2 = r2_score(y_true, y_pred)
         val_thorough_loss = mean_squared_error(y_true, y_pred)
 
@@ -334,9 +334,9 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         """Train for one epoch."""
         return self._run_epoch(self.train_dataloader, train=True)
 
-    def validate_epoch(self):
+    def validate_epoch(self, val_dataloader=None):
         """Validate for one epoch."""
-        return self._run_epoch(self.val_dataloader, train=False)
+        return self._run_epoch(val_dataloader, train=False)
 
     def train(self):
         """Train the model over multiple epochs."""
@@ -354,11 +354,11 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
                 ) = self.train_epoch()
 
                 avg_li_val_loss, avg_val_loss, li_r2_val, r2_val, entropy_val = (
-                    self.validate_epoch()
+                    self.validate_epoch(self.val_dataloader)
                 )
             else:
                 avg_train_loss, r2_train, entropy_train = self.train_epoch()
-                avg_val_loss, r2_val, entropy_val = self.validate_epoch()
+                avg_val_loss, r2_val, entropy_val = self.validate_epoch(self.val_dataloader)
 
             train_losses.append(avg_train_loss)
             val_losses.append(avg_val_loss)
@@ -382,10 +382,10 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
                     info["li_r2_train"] = li_r2_train
                     info["li_r2_val"] = li_r2_val
 
-                if self.config["training"][
-                    "num_noisy_configurations"
-                ] == 1 and epoch % self.training_config.get(
-                    "save_model_every_n_epochs", 1
+                if (
+                    self.config["training"]["num_noisy_configurations"] == 1
+                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
+                    == 0
                 ):
                     thorough_train_loss, thorough_train_r2, _, _ = (
                         self._thorough_validation(self.train_dataloader)
@@ -419,14 +419,89 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         torch.save(self.model.state_dict(), model_path)
         torch.save(self.optimizer.state_dict(), optimizer_path)
 
-        # if self.run is not None:
 
-        #     artifact = wandb.Artifact(f"{name}_model_epoch_{epoch}", type="model")
-        #     artifact.add_file(model_path)
-        #     self.run.log_artifact(artifact)
+class TrainerRandom(Trainer):
+    def __init__(self, net, train_dataloader, val_dataloader, random_dataloader, config):
+        super().__init__(net, train_dataloader, val_dataloader, config)
+        self.random_dataloader = random_dataloader
 
-        #     artifact = wandb.Artifact(
-        #         f"{name}_optimizer_epoch_{epoch}", type="optimizer"
-        #     )
-        #     artifact.add_file(optimizer_path)
-        #     self.run.log_artifact(artifact)
+    def train(self):
+        """Train the model over multiple epochs."""
+        train_losses = []
+        val_losses = []
+
+        for epoch in range(1, self.num_epochs + 1):
+            if self.predict_per_atom:
+                (
+                    avg_li_train_loss,
+                    avg_train_loss,
+                    li_r2_train,
+                    r2_train,
+                    entropy_train,
+                ) = self.train_epoch()
+
+                avg_li_val_loss, avg_val_loss, li_r2_val, r2_val, entropy_val = (
+                    self.validate_epoch()
+                )
+            else:
+                avg_train_loss, r2_train, entropy_train = self.train_epoch()
+                avg_val_loss, r2_val, entropy_val = self.validate_epoch(self.val_dataloader)
+                avg_rnd_loss, r2_rnd, entropy_rnd = self.validate_epoch(self.random_dataloader)
+
+            train_losses.append(avg_train_loss)
+            val_losses.append(avg_val_loss)
+
+            if self.config["wandb"]["verbose"]:
+                info = {
+                    "epoch": epoch,
+                    "train_loss": avg_train_loss,
+                    "val_loss": avg_val_loss,
+                    "rnd_loss": avg_rnd_loss,
+                    "r2_train": r2_train,
+                    "r2_val": r2_val,
+                    "r2_rnd": r2_rnd,
+                }
+
+                if self.predict_importance:
+                    info["entropy_train"] = entropy_train
+                    info["entropy_val"] = entropy_val
+                    info["entropy_rnd"] = entropy_rnd
+
+                if self.predict_per_atom:
+                    info["avg_li_train_loss"] = avg_li_train_loss
+                    info["avg_li_val_loss"] = avg_li_val_loss
+                    info["li_r2_train"] = li_r2_train
+                    info["li_r2_val"] = li_r2_val
+
+                if (
+                    self.config["training"]["num_noisy_configurations"] == 1
+                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
+                    == 0
+                ):
+                    thorough_train_loss, thorough_train_r2, _, _ = (
+                        self._thorough_validation(self.train_dataloader)
+                    )
+
+                    thorough_val_loss, thorough_val_r2, _, _ = (
+                        self._thorough_validation(self.val_dataloader)
+                    )
+
+                    thorough_rnd_loss, thorough_rnd_r2, _, _ = (
+                        self._thorough_validation(self.random_dataloader)
+                    )
+
+                    info["thorough_val_loss"] = thorough_val_loss
+                    info["thorough_val_r2"] = thorough_val_r2
+                    info["thorough_train_loss"] = thorough_train_loss
+                    info["thorough_train_r2"] = thorough_train_r2
+                    info["thorough_rnd_loss"] = thorough_rnd_loss
+                    info["thorough_rnd_r2"] = thorough_rnd_r2
+
+                wandb.log(info)
+
+            if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
+                self._save_checkpoint(epoch)
+
+        return train_losses, val_losses
+
+

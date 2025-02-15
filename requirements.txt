@@ -15,7 +15,7 @@ sympy
 python-dotenv
 pydantic==2.9.2
 mp-api==0.42.2
-e3nn==0.5.4
+e3nn==0.5.5
 sevenn==0.10.1
 wandb
 pylint
