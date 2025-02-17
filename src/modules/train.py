@@ -4,41 +4,44 @@ Handles data loading, processing, training, and evaluation.
 """
 
 import os
-import numpy as np
+from typing import List  # Standard library imports first
+from datetime import datetime
 
+# Third-party imports
+import numpy as np
 import torch
 import torch_scatter
-from torch import nn, optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+from torch_geometric.loader import DataLoader
 from sklearn.metrics import r2_score, mean_squared_error
 from tqdm import tqdm
 import wandb
 
 
-class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
+
+class Trainer:  # pylint: disable=R0902, R0914
     """
     Trainer class for managing model training and validation.
-
-    Attributes:
-        model (torch.nn.Module): The neural network model.
-        train_dataloader (DataLoader): Dataloader for training data.
-        val_dataloader (DataLoader): Dataloader for validation data.
-        config (dict): Configuration dictionary.
     """
 
-    def __init__(self, model, train_dataloader, val_dataloader, config):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        train_dataloader: DataLoader,
+        val_dataloaders: List[DataLoader],
+        config: dict,
+    ):
         """
         Initialize the Trainer with model, data loaders, and configuration.
-
-        Args:
-            model (torch.nn.Module): The model to train.
-            train_dataloader (DataLoader): Training data loader.
-            val_dataloader (DataLoader): Validation data loader.
-            config (dict): Training configuration.
         """
         self.model = model
         self.train_dataloader = train_dataloader
-        self.val_dataloader = val_dataloader
+        self.val_dataloaders = val_dataloaders
         self.config = config
+
+        current_time = datetime.now()
+        formatted_time = current_time.strftime("%Y_%m_%d_%H_%M_%S")
+        self.name = "_".join([self.config["experiment_name"], formatted_time])
 
         self.training_config = config["training"]
         self.device = self.training_config.get(
@@ -73,7 +76,35 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
 
         self.predict_importance = self.config["model"]["predict_importance"]
         self.predict_per_atom = self.config["training"]["predict_per_atom"]
+        # constant_lr, sequential_lr
+        match self.config["scheduler"]["name"]:
+            case "constant_lr":
+                self.scheduler = None
+            case "sequential_lr":
+                warmup_lr_scheduler = LinearLR(
+                    self.optimizer,
+                    start_factor=config["scheduler"]["parameterers"]["warmup_decay"],
+                    total_iters=config["scheduler"]["parameterers"]["warmup_epochs"],
+                )
+                main_lr_scheduler = CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=config["training"]["num_epochs"]
+                    - config["scheduler"]["parameterers"]["warmup_epochs"],
+                    eta_min=0,
+                )
 
+                self.scheduler = torch.optim.lr_scheduler.SequentialLR(
+                    self.optimizer,
+                    schedulers=[warmup_lr_scheduler, main_lr_scheduler],
+                    milestones=[config["scheduler"]["parameterers"]["warmup_epochs"]],
+                    verbose=True,
+                )
+            case "reduce_lr_on_plateau":
+                self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer
+                )
+            case _:
+                raise NotImplementedError(self.config["scheduler"]["name"])
         if config["wandb"]["verbose"]:
             tags = []
             if self.training_config["forces_divided_by_mass"]:
@@ -91,7 +122,7 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
             self.run = wandb.init(
                 entity=config["wandb"]["entity_name"],
                 project=config["wandb"]["project_name"],
-                name=config["experiment_name"],
+                name=self.name,
                 tags=tags,
                 config=config,
             )
@@ -99,7 +130,7 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
     def _get_criterion(self, name):
         """Return the appropriate loss criterion."""
         if name == "MSELoss":
-            return nn.MSELoss()
+            return torch.nn.MSELoss()
         raise NotImplementedError(f"Unsupported criterion: {name}")
 
     def _get_optimizer(self):
@@ -109,14 +140,14 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         weight_decay = self.config["optimizer"].get("weight_decay", 0)
 
         if optimizer_name == "Adam":
-            return optim.Adam(
+            return torch.optim.Adam(
                 self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
             )
         raise NotImplementedError(f"Unsupported optimizer: {optimizer_name}")
 
-    def _thorough_validation(self, dataloader):
+    def _thorough_validation(self, dataloader, num_validations=10):
         y_pred_agg = []
-        for _ in range(20):
+        for _ in range(num_validations):
             preds_epoch = []
             indexes_epoch = []
             with torch.set_grad_enabled(False):
@@ -141,8 +172,18 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
             y_true.append(i.y)
             idx_true.append(i.index)
 
-        y_true = torch.concatenate(y_true).cpu().detach().numpy()[:: self.config["training"]["num_noisy_configurations"]]
-        idx_true = torch.concatenate(idx_true).cpu().detach().numpy()[:: self.config["training"]["num_noisy_configurations"]]
+        y_true = (
+            torch.concatenate(y_true)
+            .cpu()
+            .detach()
+            .numpy()[:: self.config["training"]["num_noisy_configurations"]]
+        )
+        idx_true = (
+            torch.concatenate(idx_true)
+            .cpu()
+            .detach()
+            .numpy()[:: self.config["training"]["num_noisy_configurations"]]
+        )
 
         y_true = y_true[np.argsort(idx_true)]
 
@@ -264,6 +305,9 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         y_true = data["y"][:: self.num_noisy_configurations]
         y_pred = final_predictions.detach()
 
+        if len(num_atoms) == 1:
+            final_predictions = final_predictions.unsqueeze(0)
+            y_pred = y_pred.unsqueeze(0)
         assert final_predictions.shape == y_true.shape
         loss = self.criterion(final_predictions, y_true)
 
@@ -326,7 +370,7 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         r2 = r2_score(y_true, y_pred)
 
         if self.predict_per_atom:
-            return li_avg_loss, avg_loss, li_r2, r2, mean_entropy
+            return avg_loss, r2, mean_entropy, li_avg_loss, li_r2
 
         return avg_loss, r2, mean_entropy
 
@@ -338,69 +382,112 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
         """Validate for one epoch."""
         return self._run_epoch(val_dataloader, train=False)
 
+    def _construct_logging_info(self, epoch, train_results, val_results):
+        info = {
+            "epoch": epoch,
+            "train_loss": train_results[0],
+            "r2_train": train_results[1],
+        }
+
+        for name, result in val_results.items():
+            info.update({f"{name}_loss": result[0], f"{name}_r2": result[1]})
+
+        if self.predict_importance:
+            info.update(
+                {
+                    "train_entropy": train_results[2],
+                }
+            )
+
+            for name, result in val_results.items():
+                info.update(
+                    {
+                        f"{name}_entropy": result[2],
+                    }
+                )
+
+        if self.predict_per_atom:
+            info.update(
+                {
+                    "avg_li_train_loss": train_results[3],
+                    "li_r2_train": train_results[4],
+                }
+            )
+
+            for name, result in val_results.items():
+                info.update(
+                    {
+                        f"avg_li_{name}_loss": result[3],
+                        f"li_r2_{name}": result[4],
+                    }
+                )
+        return info
+
+    def _construct_logging_info_from_thorough_validation(self, info):
+        thorough_train_loss, thorough_train_r2, y_true, y_pred = (
+            self._thorough_validation(self.train_dataloader)
+        )
+
+        info["thorough_train_loss"] = thorough_train_loss
+        info["thorough_train_r2"] = thorough_train_r2
+
+        table = wandb.Table(
+            data=[[label, prediction] for label, prediction in zip(y_true, y_pred)],
+            columns=["label", "prediction"],
+        )
+        wandb.log(
+            {
+                "plot_train": wandb.plot.scatter(
+                    table, "label", "prediction", title="train"
+                )
+            }
+        )
+
+        for name, dataloader in self.val_dataloaders.items():
+
+            thorough_val_loss, thorough_val_r2, y_true, y_pred = (
+                self._thorough_validation(dataloader)
+            )
+
+            info[f"thorough_{name}_loss"] = thorough_val_loss
+            info[f"thorough_{name}_r2"] = thorough_val_r2
+
+            table = wandb.Table(
+                data=[[label, prediction] for label, prediction in zip(y_true, y_pred)],
+                columns=["label", "prediction"],
+            )
+            wandb.log(
+                {
+                    f"plot_{name}": wandb.plot.scatter(
+                        table, "label", "prediction", title=name
+                    )
+                }
+            )
+
+        return info
+
     def train(self):
         """Train the model over multiple epochs."""
-        train_losses = []
-        val_losses = []
-
+        train_losses, val_losses = [], []
+        val_results = {}
         for epoch in range(1, self.num_epochs + 1):
-            if self.predict_per_atom:
-                (
-                    avg_li_train_loss,
-                    avg_train_loss,
-                    li_r2_train,
-                    r2_train,
-                    entropy_train,
-                ) = self.train_epoch()
-
-                avg_li_val_loss, avg_val_loss, li_r2_val, r2_val, entropy_val = (
-                    self.validate_epoch(self.val_dataloader)
-                )
-            else:
-                avg_train_loss, r2_train, entropy_train = self.train_epoch()
-                avg_val_loss, r2_val, entropy_val = self.validate_epoch(self.val_dataloader)
-
-            train_losses.append(avg_train_loss)
-            val_losses.append(avg_val_loss)
-
+            train_results = self.train_epoch()
+            for name, dataloader in self.val_dataloaders.items():
+                val_results[name] = self.validate_epoch(dataloader)
             if self.config["wandb"]["verbose"]:
-                info = {
-                    "epoch": epoch,
-                    "train_loss": avg_train_loss,
-                    "val_loss": avg_val_loss,
-                    "r2_train": r2_train,
-                    "r2_val": r2_val,
-                }
-
-                if self.predict_importance:
-                    info["entropy_train"] = entropy_train
-                    info["entropy_val"] = entropy_val
-
-                if self.predict_per_atom:
-                    info["avg_li_train_loss"] = avg_li_train_loss
-                    info["avg_li_val_loss"] = avg_li_val_loss
-                    info["li_r2_train"] = li_r2_train
-                    info["li_r2_val"] = li_r2_val
+                info = self._construct_logging_info(epoch, train_results, val_results)
 
                 if (
-                    self.config["training"]["num_noisy_configurations"] == 1
-                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
+                    epoch % self.training_config.get("save_model_every_n_epochs", 1)
                     == 0
                 ):
-                    thorough_train_loss, thorough_train_r2, _, _ = (
-                        self._thorough_validation(self.train_dataloader)
-                    )
+                    info = self._construct_logging_info_from_thorough_validation(info)
 
-                    thorough_val_loss, thorough_val_r2, _, _ = (
-                        self._thorough_validation(self.val_dataloader)
-                    )
-
-                    info["thorough_val_loss"] = thorough_val_loss
-                    info["thorough_val_r2"] = thorough_val_r2
-                    info["thorough_train_loss"] = thorough_train_loss
-                    info["thorough_train_r2"] = thorough_train_r2
-
+                info["lr"] = self.optimizer.param_groups[0]["lr"]
                 wandb.log(info)
+
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
                 self._save_checkpoint(epoch)
@@ -409,99 +496,13 @@ class Trainer:  # pylint: disable=R0902, R0914, E0606, W0632
 
     def _save_checkpoint(self, epoch):
         """Save the model and optimizer state as a checkpoint."""
-        name = self.config["experiment_name"]
         output_dir = self.config["output_dir"]
         os.makedirs(output_dir, exist_ok=True)
 
-        model_path = os.path.join(output_dir, f"{name}_model_epoch_{epoch}.pt")
-        optimizer_path = os.path.join(output_dir, f"{name}_optimizer_epoch_{epoch}.pt")
+        model_path = os.path.join(output_dir, f"{self.name}_model_epoch_{epoch}.pt")
+        optimizer_path = os.path.join(
+            output_dir, f"{self.name}_optimizer_epoch_{epoch}.pt"
+        )
 
         torch.save(self.model.state_dict(), model_path)
         torch.save(self.optimizer.state_dict(), optimizer_path)
-
-
-class TrainerRandom(Trainer):
-    def __init__(self, net, train_dataloader, val_dataloader, random_dataloader, config):
-        super().__init__(net, train_dataloader, val_dataloader, config)
-        self.random_dataloader = random_dataloader
-
-    def train(self):
-        """Train the model over multiple epochs."""
-        train_losses = []
-        val_losses = []
-
-        for epoch in range(1, self.num_epochs + 1):
-            if self.predict_per_atom:
-                (
-                    avg_li_train_loss,
-                    avg_train_loss,
-                    li_r2_train,
-                    r2_train,
-                    entropy_train,
-                ) = self.train_epoch()
-
-                avg_li_val_loss, avg_val_loss, li_r2_val, r2_val, entropy_val = (
-                    self.validate_epoch()
-                )
-            else:
-                avg_train_loss, r2_train, entropy_train = self.train_epoch()
-                avg_val_loss, r2_val, entropy_val = self.validate_epoch(self.val_dataloader)
-                avg_rnd_loss, r2_rnd, entropy_rnd = self.validate_epoch(self.random_dataloader)
-
-            train_losses.append(avg_train_loss)
-            val_losses.append(avg_val_loss)
-
-            if self.config["wandb"]["verbose"]:
-                info = {
-                    "epoch": epoch,
-                    "train_loss": avg_train_loss,
-                    "val_loss": avg_val_loss,
-                    "rnd_loss": avg_rnd_loss,
-                    "r2_train": r2_train,
-                    "r2_val": r2_val,
-                    "r2_rnd": r2_rnd,
-                }
-
-                if self.predict_importance:
-                    info["entropy_train"] = entropy_train
-                    info["entropy_val"] = entropy_val
-                    info["entropy_rnd"] = entropy_rnd
-
-                if self.predict_per_atom:
-                    info["avg_li_train_loss"] = avg_li_train_loss
-                    info["avg_li_val_loss"] = avg_li_val_loss
-                    info["li_r2_train"] = li_r2_train
-                    info["li_r2_val"] = li_r2_val
-
-                if (
-                    self.config["training"]["num_noisy_configurations"] == 1
-                    and epoch % self.training_config.get("save_model_every_n_epochs", 1)
-                    == 0
-                ):
-                    thorough_train_loss, thorough_train_r2, _, _ = (
-                        self._thorough_validation(self.train_dataloader)
-                    )
-
-                    thorough_val_loss, thorough_val_r2, _, _ = (
-                        self._thorough_validation(self.val_dataloader)
-                    )
-
-                    thorough_rnd_loss, thorough_rnd_r2, _, _ = (
-                        self._thorough_validation(self.random_dataloader)
-                    )
-
-                    info["thorough_val_loss"] = thorough_val_loss
-                    info["thorough_val_r2"] = thorough_val_r2
-                    info["thorough_train_loss"] = thorough_train_loss
-                    info["thorough_train_r2"] = thorough_train_r2
-                    info["thorough_rnd_loss"] = thorough_rnd_loss
-                    info["thorough_rnd_r2"] = thorough_rnd_r2
-
-                wandb.log(info)
-
-            if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
-                self._save_checkpoint(epoch)
-
-        return train_losses, val_losses
-
-

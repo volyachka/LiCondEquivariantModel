@@ -1,7 +1,7 @@
 """
 This module defines the `SevenNetPropertiesPredictor` class, which uses a pretrained
 SevenNet model to predict properties (such as forces and energy) of atomic systems.
-It also defines the `LennardJonesPropertiesPredictor` class, which uses the 
+It also defines the `LennardJonesPropertiesPredictor` class, which uses the
 Lennard-Jones potential for property prediction.
 """
 

@@ -1,11 +1,11 @@
 # General settings
-experiment_name: "baseline_sevennet_clip_0.01_lr_0.001_num_noisy_cfgs_3"
+experiment_name: "baseline_random_clip_0.01_constant_lr"
 comment: "potentials by sevennet"
 output_dir: "/mnt/hdd/turchina/saved_models" 
  
 # Data configuration
 data:
-  name: "snapshots_by_sevennet"
+  name: "md_by_sevennet"
   data_path: "data/sevennet_slopes.csv"
   target_column: "v1_Li_slope"
   temperature: 1000
@@ -32,11 +32,20 @@ model:
   num_nodes: 1.0
 
 scheduler:
-  constant_lr: True
-  warmup_scheduler: "LinearLR"
-  warmup_epochs: 5
-  warmup_decay: 0.01
-  main_scheduler: "CosineAnnealingLR"
+  name: "constant_lr"
+  parameterers:
+    warmup_scheduler: "LinearLR"
+    warmup_epochs: 3
+    warmup_decay: 0.1
+    main_scheduler: "CosineAnnealingLR"
+
+# scheduler:
+#   name: "sequential_lr"
+#   parameterers:
+#     warmup_scheduler: "LinearLR"
+#     warmup_epochs: 3
+#     warmup_decay: 0.1
+#     main_scheduler: "CosineAnnealingLR"
 
 optimizer:
   name: "Adam"
@@ -44,10 +53,10 @@ optimizer:
 
 # Training hyperparameters
 training:
-  num_noisy_configurations: 3
+  num_noisy_configurations: 1
   criterion: "MSELoss"  
   num_epochs: 500
-  device: "cuda:1"
+  device: "cuda:0"
   save_model_every_n_epochs: 20
   forces_divided_by_mass: True
   use_displacements: False
@@ -56,13 +65,11 @@ training:
   softmax_within_single_atom_by_configurations: True
   softmax_within_configurations: False
   predict_per_atom: False
-  strategy_sampling: "trajectory"
+  strategy_sampling: "gaussian_noise"
 
 property_predictor:
-  name: "sevennet"
-  property_config:
-    checkpoint: "7net-0"
-    batch_size: 50
+  name: "Random"
+  property_config: {}
   
 wandb:
   verbose: True

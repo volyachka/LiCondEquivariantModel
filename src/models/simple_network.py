@@ -1,12 +1,12 @@
 """
-This module defines the SimplePeriodicNetwork class, which adapts the 
-SimpleNetwork class from e3nn for use in models involving periodic boundary 
-conditions. The SimplePeriodicNetwork class overrides certain methods from 
-SimpleNetwork to handle periodic data and uses a mean pooling operation 
+This module defines the SimplePeriodicNetwork class, which adapts the
+SimpleNetwork class from e3nn for use in models involving periodic boundary
+conditions. The SimplePeriodicNetwork class overrides certain methods from
+SimpleNetwork to handle periodic data and uses a mean pooling operation
 instead of summing over atom contributions.
 
 Classes:
-    SimplePeriodicNetwork: A neural network for processing periodic data 
+    SimplePeriodicNetwork: A neural network for processing periodic data
     with modified pooling and preprocessing methods.
 """
 

@@ -2,7 +2,7 @@
 """
 This module contains a test for validating the properties (forces and energy)
 predicted by the SevenNet model against the values computed by the SevenNetCalculator.
-The test ensures that the model's predictions for forces and energy are consistent 
+The test ensures that the model's predictions for forces and energy are consistent
 with the calculations from the SevenNetCalculator.
 """
 

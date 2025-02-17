@@ -1,8 +1,8 @@
 """
 Tests for building graphs using the neighbor list for atomic structures.
 
-These tests compare graph-building functionality by using a class-based 
-approach for neighbor list construction and a function-based approach to 
+These tests compare graph-building functionality by using a class-based
+approach for neighbor list construction and a function-based approach to
 check if the generated edge sources and destinations match.
 """
 
@@ -42,6 +42,8 @@ def test_graph_building(dataset):
         upd_neigh_style="call_func",
         predict_per_atom=False,
         clip_value=0.01,
+        strategy_sampling="trajectory",
+        device="cuda",
     )
 
     dataloader_class.collate_fn = AtomsToGraphCollater(
@@ -56,6 +58,8 @@ def test_graph_building(dataset):
         upd_neigh_style="update_class",
         predict_per_atom=False,
         clip_value=0.01,
+        strategy_sampling="trajectory",
+        device="cuda",
     )
 
     for [data_class, _], [data_func, _] in zip(dataloader_func, dataloader_class):
