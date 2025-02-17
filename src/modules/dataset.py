@@ -7,6 +7,7 @@ import os
 import json
 from copy import deepcopy
 from typing import Any, List, Tuple, Optional, Literal
+import random
 
 # Third-party imports
 import joblib
@@ -120,6 +121,7 @@ def build_datasets_with_random(  # pylint: disable=R0914
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
         atoms.info["id"] = index
+
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
@@ -186,6 +188,8 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         upd_neigh_style: Literal["update_class", "call_func"],
         predict_per_atom: bool,
         clip_value: float,
+        strategy_sampling: str,
+        device: Any,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -200,15 +204,25 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         self.upd_neigh_style = upd_neigh_style
         self.predict_per_atom = predict_per_atom
         self.clip_value = clip_value
+        self.device = device
+        self.strategy_sampling = strategy_sampling
 
         assert self.upd_neigh_style in {"update_class", "call_func"}
+        assert self.strategy_sampling in {"gaussian_noise", "trajectory"}
 
         self.nl_builders = {}
 
         if self.upd_neigh_style == "update_class":
-            for data in dataset:
-                self.nl_builders[data.x["atoms"].info["id"]] = data.x["nl"]
-
+            match self.strategy_sampling:
+                case "gaussian_noise":
+                    for data in dataset:
+                        self.nl_builders[data.x["atoms"].info["id"]] = data.x["nl"]
+                case "trajectory":
+                    for data in dataset:
+                        self.nl_builders[data.x["idx"]] = data.x["nl"]
+                case _:
+                    raise NotImplementedError(self.strategy_sampling)
+                
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
         Add noise to atomic structures.
@@ -227,13 +241,19 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
             new_atoms.set_positions(positions + noise)
             noises.append(new_atoms)
         return noises
+    
+    # def pick_random_structures_from_traj(self, batch: List[Any])-> Any:
+    #     selected_structures = []
+    #     for structures in batch:
+    #         print(structures)
+    #     return selected_structures
 
     def transit(  # pylint: disable=R0913, R0914, R0915, E0606
         self,
         *,
         masses_batch: list[np.ndarray],
         atoms_batch: list[MSONAtoms],
-        noise_structure_batch: list[MSONAtoms],
+        change_structures_batch: list[MSONAtoms],
         forces_batch: list[torch.Tensor],
         energy_batch: list[torch.Tensor],
         log_diffusion_batch: list[float],
@@ -255,7 +275,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         ) in zip(
             masses_batch,
             atoms_batch,
-            noise_structure_batch,
+            change_structures_batch,
             forces_batch,
             energy_batch,
             log_diffusion_batch,
@@ -380,30 +400,70 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         index_batch = []
         num_atoms = []
 
-        atoms_reference_positions = np.concatenate(
-            [data.x["atoms"].get_positions() for data in batch]
-        )
+        # atoms_reference_positions = np.concatenate(
+        #     [data.x["atoms"].get_positions() for data in batch]
+        # )
 
-        for data in batch:
-            masses_batch.extend(
-                self.num_noisy_configurations * [data.x["atoms"].get_masses()]
-            )
-            log_diffusion_batch.extend(
-                self.num_noisy_configurations * [data.x["log_diffusion"]]
-            )
-            atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
-            num_atoms.append(len(data.x["atoms"]))
-            index_batch.extend(
-                self.num_noisy_configurations * [data.x["atoms"].info["id"]]
-            )
+        match self.strategy_sampling:
+            case "gaussian_noise":
+                for data in batch:
+                    atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
 
-        noise_structure_batch = self.set_noise_to_structures(atoms_batch)
-        with torch.enable_grad():
-            properites = self.properties_predictor.predict(noise_structure_batch)
+                    masses_batch.extend(
+                        self.num_noisy_configurations * [data.x["atoms"].get_masses()]
+                    )
+                    log_diffusion_batch.extend(
+                        self.num_noisy_configurations * [data.x["log_diffusion"]]
+                    )
+                    atoms_batch.extend(self.num_noisy_configurations * [data.x["atoms"]])
+                    num_atoms.append(len(data.x["atoms"]))
+                    index_batch.extend(
+                        self.num_noisy_configurations * [data.x["atoms"].info["id"]]
+                    )
 
-        forces_batch = properites["forces"]
-        energy_batch = properites["energy"]
+                change_structures_batch = self.set_noise_to_structures(atoms_batch)
 
+                with torch.enable_grad():
+                    properites = self.properties_predictor.predict(change_structures_batch)
+                    forces_batch = properites["forces"]
+                    energy_batch = properites["energy"]
+
+            case "trajectory":
+                for data in batch:
+                    atoms_batch.extend(random.sample(data.x["snapshots"], self.num_noisy_configurations))
+
+                    masses_batch.extend(
+                        self.num_noisy_configurations * [atoms_batch[-1].get_masses()]
+                    )
+                    log_diffusion_batch.extend(
+                        self.num_noisy_configurations * [data.x["log_diffusion"]]
+                    )
+
+                    num_atoms.append(len(atoms_batch[-1]))
+                    index_batch.extend(
+                        self.num_noisy_configurations * [data.x["idx"]]
+                    )
+                    
+                change_structures_batch = atoms_batch
+
+
+                forces_batch = []
+                energy_batch = []
+                
+                for structure in atoms_batch:
+                    forces_batch.append(torch.tensor(
+                    structure.get_forces(), device=self.device, dtype=torch.float32
+                    ))
+
+                    energy_batch.append(torch.tensor(
+                        structure.get_potential_energy(),
+                        device=self.device,
+                        dtype=torch.float32,
+                    ).unsqueeze(0))
+
+            case _:
+                raise NotImplementedError(self.strategy_sampling)
+                
         if self.use_energies:
             equilibrium_structures_batch = list(data.x["atoms"] for data in batch)
             energy_equilibrium_batch = self.properties_predictor.predict(
@@ -423,18 +483,58 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902
         graphs_batch = self.transit(
             masses_batch=masses_batch,
             atoms_batch=atoms_batch,
-            noise_structure_batch=noise_structure_batch,
+            change_structures_batch=change_structures_batch,
             forces_batch=forces_batch,
             energy_batch=energy_batch,
             log_diffusion_batch=log_diffusion_batch,
             index_batch=index_batch,
         )
 
-        atoms_positions_should_be_unchanged = np.concatenate(
-            [data.x["atoms"].get_positions() for data in batch]
-        )
-        assert (atoms_reference_positions == atoms_positions_should_be_unchanged).all()
+        # atoms_positions_should_be_unchanged = np.concatenate(
+        #     [data.x["atoms"].get_positions() for data in batch]
+        # )
+        # assert (atoms_reference_positions == atoms_positions_should_be_unchanged).all()
 
         return super().__call__(graphs_batch), num_atoms
 
+def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0914
+    csv_path: str, 
+    li_column: str, 
+    temp: int, 
+    clip_value: float,
+    cutoff: int,
+    skip_first_fs: int = 10000,
+    step_size_fs: int = 10000
+) -> List[Data]:
+    """
+    Builds a dataset from a CSV file by processing and filtering data based on specified parameters.
+    """    
+    df = pd.read_csv(csv_path)
+    df[li_column] = df[li_column].clip(lower=clip_value)
+    mpids = df[df["temperature"] == temp]["mpid"].to_list()
+    docs = query_mpid_structure(mpids=mpids)
 
+    dataset = []
+    for idx, doc in enumerate(docs):
+        material_id = doc["material_id"]
+        structure = doc["structure"]
+
+        atoms = AseAtomsAdaptor.get_atoms(structure)
+        atoms.info["id"] = idx
+        log_diffusion = np.log10(
+            df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
+                li_column
+            ].iloc[0]
+        )
+
+        traj_path = f"/mnt/hdd/maevskiy/MLIAP-MD-data/gpu_prod/{material_id}-T1000/md.traj"
+        snapshots = ase.io.read(traj_path, index=slice(skip_first_fs, None, step_size_fs))
+        cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
+        nl = NeighborList(
+                        cuttofs, self_interaction=True, bothways=False, skin=0.5
+                    )
+
+
+        dataset.append(Data({"idx": idx, "log_diffusion": log_diffusion, "snapshots": snapshots, "nl": nl}))
+
+    return dataset

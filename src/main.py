@@ -23,6 +23,7 @@ from modules.dataset import (
     build_dataset,
     build_dataloaders_from_dataset,
     build_superionic_toy_dataset,
+    build_dataset_snapshots_by_sevennet,
     AtomsToGraphCollater,
 )
 
@@ -68,22 +69,31 @@ def main():
         else config["training"]["device"]
     )
 
-    if config["data"]["name"] == "md_by_sevennet":
-        dataset = build_dataset(
-            csv_path=config["data"]["data_path"],
-            li_column=config["data"]["target_column"],
-            temp=config["data"]["temperature"],
-            clip_value=config["data"]["clip_value"],
-            cutoff=config["model"]["radial_cutoff"],
-        )
-    elif config["data"]["name"] == "toy_dataset":
-        dataset = build_superionic_toy_dataset(
-            root_folder=config["data"]["root_folder"],
-            clip_value=config["data"]["clip_value"],
-            cutoff=config["model"]["radial_cutoff"],
-        )
-    else:
-        raise NotImplementedError()
+    match config["data"]["name"]:
+        case "md_by_sevennet":
+            dataset = build_dataset(
+                csv_path=config["data"]["data_path"],
+                li_column=config["data"]["target_column"],
+                temp=config["data"]["temperature"],
+                clip_value=config["data"]["clip_value"],
+                cutoff=config["model"]["radial_cutoff"],
+            )
+        case "toy_dataset":
+            dataset = build_superionic_toy_dataset(
+                root_folder=config["data"]["root_folder"],
+                clip_value=config["data"]["clip_value"],
+                cutoff=config["model"]["radial_cutoff"],
+            )
+        case "snapshots_by_sevennet":
+            dataset = build_dataset_snapshots_by_sevennet(
+                csv_path=config["data"]["data_path"],
+                li_column=config["data"]["target_column"],
+                temp=config["data"]["temperature"],
+                clip_value=config["data"]["clip_value"],
+                cutoff=config["model"]["radial_cutoff"],
+            )
+        case _:
+            raise NotImplementedError()
     
     match property_predictor_name:
         case "sevennet":
@@ -124,6 +134,8 @@ def main():
         upd_neigh_style=config["data"]["upd_neigh_style"],
         predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
+        strategy_sampling=config["training"]["strategy_sampling"],
+        device=device
     )
 
     val_dataloader.collate_fn = AtomsToGraphCollater(
@@ -138,6 +150,8 @@ def main():
         upd_neigh_style=config["data"]["upd_neigh_style"],
         predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
+        strategy_sampling=config["training"]["strategy_sampling"],
+        device=device
     )
 
     if config["training"]["use_displacements"]:

@@ -147,6 +147,7 @@ class MixingNetwork(torch.nn.Module):
         lmax: int,
         fc_neurons: list,
         pool_nodes: bool,
+        irreps_node_attr: int = "0e",
     ):
 
         self.lmax = lmax
@@ -154,9 +155,11 @@ class MixingNetwork(torch.nn.Module):
         self.number_of_basis = number_of_basis
         self.num_nodes = num_nodes
         self.pool_nodes = pool_nodes
+        self.irreps_node_attr = irreps_node_attr
+        self.num_neighbors = num_neighbors
         assert pool_nodes is False
         assert self.num_nodes == 1
-        assert self.fc_neurons[0] == self.number_of_basis
+        assert fc_neurons[0] == self.number_of_basis
         irreps_node_hidden = o3.Irreps(
             [(mul, (l, p)) for l in range(lmax + 1) for p in [-1, 1]]
         )
@@ -192,7 +195,7 @@ class MixingNetwork(torch.nn.Module):
             self.irreps_node_attr,
             irreps_edge_attr,
             irreps_node_output,
-            fc_neurons=self.fc_neurons,
+            fc_neurons=fc_neurons,
             num_neighbors=num_neighbors,
         )
 
