@@ -18,7 +18,6 @@ from tqdm import tqdm
 import wandb
 
 
-
 class Trainer:  # pylint: disable=R0902, R0914
     """
     Trainer class for managing model training and validation.
