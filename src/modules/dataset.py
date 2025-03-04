@@ -22,10 +22,31 @@ from ase.io import read
 from ase.neighborlist import NeighborList
 import ase.io
 from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
-from modules.utils import get_cleaned_neighbours
+from modules.utils import get_cleaned_neighbours, get_cleaned_neighbours_li_grouped
+from modules.property_prediction import SevenNetPropertiesPredictor
 
 # First-party imports
 from modules.utils import query_mpid_structure
+
+
+def split_dataset_train_val_part(
+    dataset: List[Data], test_size: int, random_state: int, batch_size: int
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    Splits a dataset into training and validation sets, and creates DataLoaders for each.
+    """
+    train_indices, val_indices = train_test_split(
+        np.arange(len(dataset)),
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    train_dataset = [dataset[i] for i in train_indices]
+    val_dataset = [dataset[i] for i in val_indices]
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    return train_dataloader, val_dataloader
 
 
 def build_dataloaders_from_dataset(
@@ -48,6 +69,95 @@ def build_dataloaders_from_dataset(
     return train_dataloader, val_dataloader
 
 
+def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
+    root_folder: str,
+    clip_value: float,
+    cutoff: float,
+    strategy_sampling: str,
+    skip_first_fs: Any = None,
+    step_size_fs: Any = None,
+):
+    """
+    Constructs an extended dataset of atomic structures with diffusion properties
+    based on sevennet inputs.
+    """
+    assert strategy_sampling in {"snapshots", "gaussian_noise"}
+    slopes_file = os.path.join(root_folder, "slopes.json")
+
+    with open(slopes_file, "r", encoding="utf-8") as file:
+        slopes_info = json.load(file)
+
+    dataset = []
+
+    idx = 0
+    for folder in os.listdir(root_folder):
+        if "runs-1000K" in folder:
+            for mp_id in os.listdir(os.path.join(root_folder, folder)):
+                if (
+                    ".output" not in mp_id
+                    and ".dvc" not in mp_id
+                    and ".gitignore" not in mp_id
+                ):
+                    name = os.path.join(folder, mp_id)
+                    if name in slopes_info.keys():
+                        log_diffusion = {}
+                        for element, value in slopes_info[name].items():
+                            log_diffusion[element] = np.log10(max(clip_value, value))
+                    else:
+                        continue
+
+                    full_path = os.path.join(root_folder, folder, mp_id)
+
+                    if strategy_sampling == "snapshots":
+                        traj_path = os.path.join(full_path, "md.traj")
+                        snapshots = ase.io.read(
+                            traj_path, index=slice(skip_first_fs, None, step_size_fs)
+                        )
+
+                        cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
+
+                        nl = NeighborList(
+                            cuttofs, self_interaction=True, bothways=True, skin=0.5
+                        )
+
+                        dataset.append(
+                            Data(
+                                {
+                                    "idx": idx,
+                                    "log_diffusion": log_diffusion,
+                                    "snapshots": snapshots,
+                                    "nl": nl,
+                                }
+                            )
+                        )
+
+                    elif strategy_sampling == "gaussian_noise":
+                        relaxed_structure_path = os.path.join(
+                            full_path, "relax_02.traj"
+                        )
+                        relaxed_structure = read(relaxed_structure_path, index=-1)
+                        calculator_path = os.path.join(full_path, "atoms.pkl")
+                        relaxed_structure.calc = joblib.load(calculator_path).calc
+                        cuttofs = len(relaxed_structure.get_positions()) * [cutoff / 2]
+
+                        nl = NeighborList(
+                            cuttofs, self_interaction=True, bothways=True, skin=0.5
+                        )
+                        dataset.append(
+                            Data(
+                                {
+                                    "atoms": relaxed_structure,
+                                    "log_diffusion": log_diffusion,
+                                    "nl": nl,
+                                    "idx": idx,
+                                }
+                            )
+                        )
+
+                    idx += 1
+    return dataset
+
+
 def build_superionic_toy_dataset(  # pylint: disable=R0914
     root_folder: str, clip_value: float, cutoff: float
 ) -> List[Data]:
@@ -58,12 +168,13 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
     dataset = []
 
     run_folder = os.path.join(root_folder, "runs")
+
     slopes_file = os.path.join(root_folder, "slopes.json")
 
     with open(slopes_file, "r", encoding="utf-8") as file:
         slopes_info = json.load(file)
 
-    index = 0
+    idx = 0
     for part in sorted(os.listdir(run_folder)):
         path = os.path.join(run_folder, part)
         for processes in os.listdir(path):
@@ -81,12 +192,12 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
                     log_diffusion = {}
                     for element, value in slopes_info[name].items():
                         log_diffusion[element] = np.log10(max(clip_value, value))
-                    relaxed_structure.info["id"] = index
+                    relaxed_structure.info["idx"] = idx
                     relaxed_structure.info["name"] = name
-                    index += 1
+                    idx += 1
                     cuttofs = len(relaxed_structure.get_positions()) * [cutoff / 2]
                     nl = NeighborList(
-                        cuttofs, self_interaction=True, bothways=False, skin=0.5
+                        cuttofs, self_interaction=True, bothways=True, skin=0.5
                     )
                     dataset.append(
                         Data(
@@ -117,12 +228,12 @@ def build_datasets_with_selected_by_random_samples(  # pylint: disable=R0914
 
     dataset_main = []
     dataset_random = []
-    for index, doc in enumerate(docs):
+    for idx, doc in enumerate(docs):
         material_id = doc["material_id"]
         structure = doc["structure"]
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
-        atoms.info["id"] = index
+        atoms.info["idx"] = idx
 
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
@@ -156,12 +267,12 @@ def build_dataset(  # pylint: disable=R0914
     docs = query_mpid_structure(mpids=mpids)
 
     dataset = []
-    for index, doc in enumerate(docs):
+    for idx, doc in enumerate(docs):
         material_id = doc["material_id"]
         structure = doc["structure"]
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
-        atoms.info["id"] = index
+        atoms.info["idx"] = idx
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
@@ -196,6 +307,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         predict_per_atom: bool,
         clip_value: float,
         strategy_sampling: str,
+        node_style_build: str,
         device: Any,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
@@ -213,22 +325,26 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         self.clip_value = clip_value
         self.device = device
         self.strategy_sampling = strategy_sampling
+        self.node_style_build = node_style_build
 
         assert self.upd_neigh_style in {"update_class", "call_func"}
         assert self.strategy_sampling in {"gaussian_noise", "trajectory"}
-
+        assert self.node_style_build in {"li_grouped", "full_atoms"}
         self.nl_builders = {}
 
         if self.upd_neigh_style == "update_class":
-            match self.strategy_sampling:
-                case "gaussian_noise":
-                    for data in dataset:
-                        self.nl_builders[data.x["atoms"].info["id"]] = data.x["nl"]
-                case "trajectory":
-                    for data in dataset:
-                        self.nl_builders[data.x["idx"]] = data.x["nl"]
-                case _:
-                    raise NotImplementedError(self.strategy_sampling)
+
+            for data in dataset:
+                self.nl_builders[data.x["idx"]] = data.x["nl"]
+            # match self.strategy_sampling:
+            #     case "gaussian_noise":
+            #         for data in dataset:
+            #             self.nl_builders[data.x["atoms"].info["idx"]] = data.x["nl"]
+            #     case "trajectory":
+            #         for data in dataset:
+            #             self.nl_builders[data.x["idx"]] = data.x["nl"]
+            #     case _:
+            #         raise NotImplementedError(self.strategy_sampling)
 
     def set_noise_to_structures(self, batch: List[Any]) -> Any:
         """
@@ -248,12 +364,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             new_atoms.set_positions(positions + noise)
             noises.append(new_atoms)
         return noises
-
-    # def pick_random_structures_from_traj(self, batch: List[Any])-> Any:
-    #     selected_structures = []
-    #     for structures in batch:
-    #         print(structures)
-    #     return selected_structures
 
     def transit(  # pylint: disable=R0913, R0914, R0915, E0606
         self,
@@ -278,7 +388,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             forces,
             energy,
             log_diffusion,
-            index,
+            idx,
         ) in zip(
             masses_batch,
             atoms_batch,
@@ -320,11 +430,18 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
 
             match self.upd_neigh_style:
                 case "update_class":
-                    self.nl_builders[index].update(noise_structure)
+                    self.nl_builders[idx].update(noise_structure)
 
-                    edge_src, edge_dst, edge_shift = get_cleaned_neighbours(
-                        self.nl_builders[index], noise_structure, self.cutoff
-                    )
+                    if self.node_style_build == "li_grouped":
+                        edge_src, edge_dst, edge_shift, _ = (
+                            get_cleaned_neighbours_li_grouped(
+                                self.nl_builders[idx], noise_structure, self.cutoff
+                            )
+                        )
+                    else:
+                        edge_src, edge_dst, edge_shift = get_cleaned_neighbours(
+                            self.nl_builders[idx], noise_structure, self.cutoff
+                        )
 
                 case "call_func":
                     edge_src, edge_dst, edge_shift = ase.neighborlist.neighbor_list(
@@ -352,6 +469,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 target = torch.full(
                     (forces.shape[0],), self.clip_value, device=value.device
                 )
+                idx = torch.full((forces.shape[0],), idx, device=value.device)
                 symbols = np.array(noise_structure.get_chemical_symbols())
 
                 if isinstance(log_diffusion, dict):
@@ -365,6 +483,8 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 target = torch.tensor(
                     log_diffusion, dtype=torch.float32, device=value.device
                 )
+
+                idx = torch.tensor(deepcopy(idx))
 
             assert torch.isnan(value).any().item() is False
 
@@ -384,7 +504,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 ),
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
                 symbols=np.array(noise_structure.get_chemical_symbols()),
-                index=index,
+                idx=idx,
             )
 
             atoms_list.append(data)
@@ -407,10 +527,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         index_batch = []
         num_atoms = []
 
-        # atoms_reference_positions = np.concatenate(
-        #     [data.x["atoms"].get_positions() for data in batch]
-        # )
-
         match self.strategy_sampling:
             case "gaussian_noise":
                 for data in batch:
@@ -425,9 +541,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                         self.num_noisy_configurations * [data.x["log_diffusion"]]
                     )
                     num_atoms.append(len(data.x["atoms"]))
-                    index_batch.extend(
-                        self.num_noisy_configurations * [data.x["atoms"].info["id"]]
-                    )
+                    index_batch.extend(self.num_noisy_configurations * [data.x["idx"]])
 
                 change_structures_batch = self.set_noise_to_structures(atoms_batch)
 
@@ -461,22 +575,31 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 forces_batch = []
                 energy_batch = []
 
-                for structure in atoms_batch:
-                    forces_batch.append(
-                        torch.tensor(
-                            structure.get_forces(),
-                            device=self.device,
-                            dtype=torch.float32,
+                if isinstance(self.properties_predictor, SevenNetPropertiesPredictor):
+                    for structure in atoms_batch:
+                        forces_batch.append(
+                            torch.tensor(
+                                structure.get_forces(),
+                                device=self.device,
+                                dtype=torch.float32,
+                            )
                         )
-                    )
 
-                    energy_batch.append(
-                        torch.tensor(
-                            structure.get_potential_energy(),
-                            device=self.device,
-                            dtype=torch.float32,
-                        ).unsqueeze(0)
-                    )
+                        energy_batch.append(
+                            torch.tensor(
+                                structure.get_potential_energy(),
+                                device=self.device,
+                                dtype=torch.float32,
+                            ).unsqueeze(0)
+                        )
+
+                else:
+                    with torch.enable_grad():
+                        properites = self.properties_predictor.predict(
+                            change_structures_batch
+                        )
+                        forces_batch = properites["forces"]
+                        energy_batch = properites["energy"]
 
             case _:
                 raise NotImplementedError(self.strategy_sampling)
@@ -523,7 +646,7 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
     clip_value: float,
     cutoff: int,
     skip_first_fs: int = 10000,
-    step_size_fs: int = 10000,
+    step_size_fs: int = 100,
 ) -> List[Data]:
     """
     Builds a dataset from a CSV file by processing and filtering data based on specified parameters.
@@ -537,9 +660,8 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
     for idx, doc in enumerate(docs):
         material_id = doc["material_id"]
         structure = doc["structure"]
-
         atoms = AseAtomsAdaptor.get_atoms(structure)
-        atoms.info["id"] = idx
+        atoms.info["idx"] = idx
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
@@ -549,11 +671,13 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
         traj_path = (
             f"/mnt/hdd/maevskiy/MLIAP-MD-data/gpu_prod/{material_id}-T1000/md.traj"
         )
+
         snapshots = ase.io.read(
             traj_path, index=slice(skip_first_fs, None, step_size_fs)
         )
+
         cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
-        nl = NeighborList(cuttofs, self_interaction=True, bothways=False, skin=0.5)
+        nl = NeighborList(cuttofs, self_interaction=True, bothways=True, skin=0.5)
 
         dataset.append(
             Data(

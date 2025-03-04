@@ -18,7 +18,7 @@ from tqdm import tqdm
 import wandb
 
 
-class Trainer:  # pylint: disable=R0902, R0914
+class Trainer:  # pylint: disable=R0902, R0914, R0915
     """
     Trainer class for managing model training and validation.
     """
@@ -98,9 +98,9 @@ class Trainer:  # pylint: disable=R0902, R0914
                     milestones=[config["scheduler"]["parameterers"]["warmup_epochs"]],
                     verbose=True,
                 )
-            case "reduce_lr_on_plateau":
+            case "plateau_lr":
                 self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    self.optimizer
+                    self.optimizer, mode="min", factor=0.1, patience=10
                 )
             case _:
                 raise NotImplementedError(self.config["scheduler"]["name"])
@@ -114,9 +114,19 @@ class Trainer:  # pylint: disable=R0902, R0914
                 tags.append("use_energies")
             if self.config["model"]["mix_properites"]:
                 tags.append("mix_properites")
-            tags.append(f"num_layers: {self.config['model']['layers']}")
+
+            tags.append(f"layers: {self.config['model']['layers']}")
+            tags.append(f"radial_cutoff: {self.config['model']['radial_cutoff']}")
+            tags.append(f"num_neighbors: {self.config['model']['num_neighbors']}")
+            tags.append(f"number_of_basis: {self.config['model']['number_of_basis']}")
+            tags.append(f"mul: {self.config['model']['mul']}")
+
             tags.append(self.mode)
             tags.append(self.config["data"]["upd_neigh_style"])
+            tags.append(self.config["training"]["strategy_sampling"])
+            tags.append(self.config["property_predictor"]["name"])
+            tags.append(self.config["data"]["name"])
+            tags.append(self.config["model"]["node_style_build"])
 
             self.run = wandb.init(
                 entity=config["wandb"]["entity_name"],
@@ -144,32 +154,66 @@ class Trainer:  # pylint: disable=R0902, R0914
             )
         raise NotImplementedError(f"Unsupported optimizer: {optimizer_name}")
 
-    def _thorough_validation(self, dataloader, num_validations=10):
+    def _thorough_validation(self, dataloader, num_validations=20):
         y_pred_agg = []
+        li_pred_agg = []
+
+        results = {}
         for _ in range(num_validations):
             preds_epoch = []
             indexes_epoch = []
+            li_pred = []
+            li_indexes = []
+
             with torch.set_grad_enabled(False):
                 for data, num_atoms in tqdm(dataloader):
                     _, _, batch_y_pred, _ = self._process_batch(
                         data, num_atoms, train=False
                     )
+
+                    if self.predict_per_atom:
+                        li_mask = np.concatenate(data["symbols"]) == "Li"
+                        li_pred.extend(batch_y_pred[li_mask])
+                        li_indexes.extend(
+                            data["idx"][
+                                :: self.config["training"]["num_noisy_configurations"]
+                            ][li_mask]
+                        )
+
                     preds_epoch.extend(batch_y_pred)
-                    indexes_epoch.extend(data["index"])
+                    indexes_epoch.extend(
+                        data["idx"][
+                            :: self.config["training"]["num_noisy_configurations"]
+                        ]
+                    )
 
             preds_epoch = torch.stack(preds_epoch).cpu().detach().numpy()
             indexes_epoch = torch.stack(indexes_epoch).cpu().detach().numpy()
             indexes_epoch = np.argsort(indexes_epoch)
             y_pred_agg.append(preds_epoch[indexes_epoch])
 
+            if self.predict_per_atom:
+                li_pred = torch.stack(li_pred).cpu().detach().numpy()
+                li_indexes = torch.stack(li_indexes).cpu().detach().numpy()
+                li_indexes = np.argsort(li_indexes)
+                li_pred_agg.append(li_pred[li_indexes])
+
         y_pred = np.vstack(y_pred_agg).mean(axis=0)
 
         y_true = []
         idx_true = []
 
+        li_idx_true = []
+        li_true = []
+
         for i, _ in dataloader:
             y_true.append(i.y)
-            idx_true.append(i.index)
+            idx_true.append(i.idx)
+
+            if self.predict_per_atom:
+                li_mask = np.concatenate(i.symbols) == "Li"
+                li_true.append(i.y[li_mask])
+                li_idx_true.append(i.idx[li_mask])
 
         y_true = (
             torch.concatenate(y_true)
@@ -177,6 +221,7 @@ class Trainer:  # pylint: disable=R0902, R0914
             .detach()
             .numpy()[:: self.config["training"]["num_noisy_configurations"]]
         )
+
         idx_true = (
             torch.concatenate(idx_true)
             .cpu()
@@ -186,10 +231,34 @@ class Trainer:  # pylint: disable=R0902, R0914
 
         y_true = y_true[np.argsort(idx_true)]
 
-        val_thorough_r2 = r2_score(y_true, y_pred)
-        val_thorough_loss = mean_squared_error(y_true, y_pred)
+        if self.predict_per_atom:
+            li_true = (
+                torch.concatenate(li_true)
+                .cpu()
+                .detach()
+                .numpy()[:: self.config["training"]["num_noisy_configurations"]]
+            )
 
-        return val_thorough_loss, val_thorough_r2, y_true, y_pred
+            li_idx_true = (
+                torch.concatenate(li_idx_true)
+                .cpu()
+                .detach()
+                .numpy()[:: self.config["training"]["num_noisy_configurations"]]
+            )
+
+            li_true = li_true[np.argsort(li_idx_true)]
+
+            results["li_thorough_r2"] = r2_score(li_true, li_pred)
+            results["li_thorough_loss"] = mean_squared_error(li_true, li_pred)
+            results["li_true"] = li_true
+            results["li_pred"] = li_pred
+
+        results["thorough_r2"] = r2_score(y_true, y_pred)
+        results["thorough_loss"] = mean_squared_error(y_true, y_pred)
+        results["y_true"] = y_true
+        results["y_pred"] = y_pred
+
+        return results
 
     def _generate_index_arrays(self, num_atoms):
 
@@ -355,23 +424,22 @@ class Trainer:  # pylint: disable=R0902, R0914
         y_pred = torch.stack(y_pred).cpu().detach().numpy()
         entropy = torch.stack(entropy).cpu().detach().numpy()
 
+        results = {}
+
         if self.predict_per_atom:
             li_true = torch.stack(li_true).cpu().detach()
             li_pred = torch.stack(li_pred).cpu().detach()
+            results["li_true"] = li_true.numpy()
+            results["li_pred"] = li_pred.numpy()
 
-            li_avg_loss = self.criterion(li_pred, li_true)
+            results["li_avg_loss"] = self.criterion(li_pred, li_true)
+            results["li_r2"] = r2_score(li_true.numpy(), li_pred.numpy())
 
-            li_r2 = r2_score(li_true.numpy(), li_pred.numpy())
+        results["avg_loss"] = total_loss / num_samples
+        results["r2"] = r2_score(y_true, y_pred)
+        results["mean_entropy"] = entropy.mean()
 
-        avg_loss = total_loss / num_samples
-
-        mean_entropy = entropy.mean()
-        r2 = r2_score(y_true, y_pred)
-
-        if self.predict_per_atom:
-            return avg_loss, r2, mean_entropy, li_avg_loss, li_r2
-
-        return avg_loss, r2, mean_entropy
+        return results
 
     def train_epoch(self):
         """Train for one epoch."""
@@ -381,87 +449,78 @@ class Trainer:  # pylint: disable=R0902, R0914
         """Validate for one epoch."""
         return self._run_epoch(val_dataloader, train=False)
 
-    def _construct_logging_info(self, epoch, train_results, val_results):
-        info = {
-            "epoch": epoch,
-            "train_loss": train_results[0],
-            "r2_train": train_results[1],
-        }
-
-        for name, result in val_results.items():
-            info.update({f"{name}_loss": result[0], f"{name}_r2": result[1]})
-
-        if self.predict_importance:
-            info.update(
-                {
-                    "train_entropy": train_results[2],
-                }
-            )
-
-            for name, result in val_results.items():
-                info.update(
-                    {
-                        f"{name}_entropy": result[2],
-                    }
-                )
-
-        if self.predict_per_atom:
-            info.update(
-                {
-                    "avg_li_train_loss": train_results[3],
-                    "li_r2_train": train_results[4],
-                }
-            )
-
-            for name, result in val_results.items():
-                info.update(
-                    {
-                        f"avg_li_{name}_loss": result[3],
-                        f"li_r2_{name}": result[4],
-                    }
-                )
-        return info
-
-    def _construct_logging_info_from_thorough_validation(self, info):
-        thorough_train_loss, thorough_train_r2, y_true, y_pred = (
-            self._thorough_validation(self.train_dataloader)
-        )
-
-        info["thorough_train_loss"] = thorough_train_loss
-        info["thorough_train_r2"] = thorough_train_r2
-
+    def _log_scatter_plot(self, name, results, title, info):
         table = wandb.Table(
-            data=[[label, prediction] for label, prediction in zip(y_true, y_pred)],
+            data=[
+                [label, prediction]
+                for label, prediction in zip(results["y_true"], results["y_pred"])
+            ],
             columns=["label", "prediction"],
         )
         wandb.log(
             {
-                "plot_train": wandb.plot.scatter(
-                    table, "label", "prediction", title="train"
+                f"plot_{name}": wandb.plot.scatter(
+                    table, "label", "prediction", title=title
                 )
+            },
+            step=info["epoch"],
+        )
+
+    def _update_thorough_results(self, name, results, info):
+        info.update(
+            {
+                f"thorough_{name}_loss": results["thorough_loss"],
+                f"thorough_{name}_r2": results["thorough_r2"],
             }
         )
 
-        for name, dataloader in self.val_dataloaders.items():
+        self._log_scatter_plot(name, results, name, info)
 
-            thorough_val_loss, thorough_val_r2, y_true, y_pred = (
-                self._thorough_validation(dataloader)
-            )
-
-            info[f"thorough_{name}_loss"] = thorough_val_loss
-            info[f"thorough_{name}_r2"] = thorough_val_r2
-
-            table = wandb.Table(
-                data=[[label, prediction] for label, prediction in zip(y_true, y_pred)],
-                columns=["label", "prediction"],
-            )
-            wandb.log(
+        if self.predict_per_atom:
+            info.update(
                 {
-                    f"plot_{name}": wandb.plot.scatter(
-                        table, "label", "prediction", title=name
-                    )
+                    f"li_thorough_{name}_loss": results["li_thorough_loss"],
+                    f"li_thorough_{name}_r2": results["li_thorough_r2"],
                 }
             )
+
+            self._log_scatter_plot(f"li_{name}", results, f"li_{name} (per atom)", info)
+
+    def _construct_logging_info_from_thorough_validation(self, info):
+        thorough_train_results = self._thorough_validation(self.train_dataloader)
+        self._update_thorough_results("train", thorough_train_results, info)
+
+        for name, dataloader in self.val_dataloaders.items():
+            thorough_val_results = self._thorough_validation(dataloader)
+            self._update_thorough_results(name, thorough_val_results, info)
+
+        return info
+
+    def _update_logging_info(self, prefix, results, info):
+        info.update(
+            {
+                f"{prefix}_loss": results["avg_loss"],
+                f"{prefix}_r2": results["r2"],
+            }
+        )
+
+        if self.predict_importance:
+            info[f"{prefix}_entropy"] = results["mean_entropy"]
+
+        if self.predict_per_atom:
+            info.update(
+                {
+                    f"li_{prefix}_loss": results["li_avg_loss"],
+                    f"li_{prefix}_r2": results["li_r2"],
+                }
+            )
+
+    def _construct_logging_info(self, epoch, train_results, val_results):
+        info = {"epoch": epoch}
+        self._update_logging_info("train", train_results, info)
+
+        for name, result in val_results.items():
+            self._update_logging_info(name, result, info)
 
         return info
 
@@ -477,16 +536,17 @@ class Trainer:  # pylint: disable=R0902, R0914
                 info = self._construct_logging_info(epoch, train_results, val_results)
 
                 if (
-                    epoch % self.training_config.get("save_model_every_n_epochs", 1)
+                    epoch == 1
+                    or epoch % self.training_config.get("save_model_every_n_epochs", 1)
                     == 0
                 ):
                     info = self._construct_logging_info_from_thorough_validation(info)
 
                 info["lr"] = self.optimizer.param_groups[0]["lr"]
-                wandb.log(info)
+                wandb.log(info, step=epoch)
 
-            if self.scheduler is not None:
-                self.scheduler.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
             if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
                 self._save_checkpoint(epoch)

@@ -84,6 +84,64 @@ def query_mpid_structure(mpids: Union[List[str], str]) -> List[dict]:
     )
 
 
+def get_cleaned_neighbours_li_grouped(  # pylint: disable=R0914
+    nl_builder: NeighborList,
+    noise_structure: MSONAtoms,
+    cutoff: float,
+):
+    """
+    Get the cleaned neighbor list from a noisy atomic structure.
+
+    This function builds a neighbor list for a given noisy atomic structure,
+    filters the neighbors based on the cutoff distance, and returns the
+    corresponding edge indices and vectors. The atomic positions are updated
+    using the neighbor list builder, and the distances are adjusted according
+    to the lattice for periodic systems.
+    """
+
+    pos = noise_structure.get_positions()
+    mask = np.full(pos.shape[0], False, dtype=bool)
+    lattice = noise_structure.cell.array
+
+    nl_builder.update(noise_structure)
+
+    src = []
+    dst = []
+    shifts = []
+
+    li_symbols = noise_structure.symbols == "Li"
+
+    for i_atom, name in enumerate(noise_structure.symbols):
+
+        neighbor_ids, offsets = nl_builder.get_neighbors(i_atom)
+        rr = pos[neighbor_ids] + offsets @ lattice - pos[i_atom][None, :]
+
+        if cutoff is not None:
+            suitable_neigh = np.linalg.norm(rr, axis=1) <= cutoff
+            neighbor_ids = neighbor_ids[suitable_neigh]
+            offsets = offsets[suitable_neigh]
+            rr = rr[suitable_neigh]
+
+        if name != "Li":
+            suitable_neigh = li_symbols[neighbor_ids]
+            neighbor_ids = neighbor_ids[suitable_neigh]
+            offsets = offsets[suitable_neigh]
+            rr = rr[suitable_neigh]
+
+        mask[i_atom] = True
+        mask[neighbor_ids] = True
+
+        src.append(np.ones(len(neighbor_ids)) * i_atom)
+        dst.append(neighbor_ids)
+        shifts.append(offsets)
+
+    edge_dst = np.concatenate(dst).astype(np.int64)
+    edge_src = np.concatenate(src).astype(np.int64)
+    shifts = np.concatenate(shifts).astype(np.int64)
+
+    return edge_src, edge_dst, shifts, mask
+
+
 def get_cleaned_neighbours(
     nl_builder: NeighborList, noise_structure: MSONAtoms, cutoff: float
 ):

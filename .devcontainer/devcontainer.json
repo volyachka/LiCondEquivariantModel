@@ -23,6 +23,6 @@
     "mounts": [
         "source=/mnt/hdd/turchina/,target=/mnt/hdd/turchina/,type=bind,consistency=cached",
         "source=/mnt/hdd/maevskiy/MLIAP-MD-data,target=/mnt/hdd/maevskiy/MLIAP-MD-data,ro,type=bind,consistency=cached",
-        "source=/mnt/hdd/maevskiy/SuperionicToy-runs/v0-2025-01-29,target=/mnt/hdd/maevskiy/SuperionicToy-runs/v0-2025-01-29,ro,type=bind,consistency=cached"
+        "source=/mnt/hdd/maevskiy/SuperionicToy-runs,target=/mnt/hdd/maevskiy/SuperionicToy-runs,ro,type=bind,consistency=cached"
     ]
 }

@@ -30,6 +30,7 @@ from modules.dataset import (
     build_superionic_toy_dataset,
     build_dataset_snapshots_by_sevennet,
     build_datasets_with_selected_by_random_samples,
+    build_extended_sevennet,
     AtomsToGraphCollater,
 )
 
@@ -76,6 +77,8 @@ def select_dataset(config: dict):
                 temp=config["data"]["temperature"],
                 clip_value=config["data"]["clip_value"],
                 cutoff=config["model"]["radial_cutoff"],
+                skip_first_fs=config["data"]["skip_first_fs"],
+                step_size_fs=config["data"]["step_size_fs"],
             )
         case "md_by_sevennet_with_selected_by_random_samples":
             return build_datasets_with_selected_by_random_samples(
@@ -84,6 +87,15 @@ def select_dataset(config: dict):
                 temp=config["data"]["temperature"],
                 clip_value=config["data"]["clip_value"],
                 cutoff=config["model"]["radial_cutoff"],
+            )
+        case "extended_md_by_sevennet":
+            return build_extended_sevennet(
+                root_folder=config["data"]["root_folder"],
+                clip_value=config["data"]["clip_value"],
+                cutoff=config["model"]["radial_cutoff"],
+                strategy_sampling=config["training"]["strategy_sampling"],
+                skip_first_fs=config["model"].get("skip_first_fs", None),
+                step_size_fs=config["model"].get("step_size_fs", None),
             )
         case _:
             raise NotImplementedError()
@@ -183,6 +195,7 @@ def main():  # pylint: disable=R0914
             predict_per_atom=config["training"]["predict_per_atom"],
             clip_value=config["data"]["clip_value"],
             strategy_sampling=config["training"]["strategy_sampling"],
+            node_style_build=config["model"]["node_style_build"],
             device=device,
         )
 
@@ -208,6 +221,7 @@ def main():  # pylint: disable=R0914
         predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
         strategy_sampling=config["training"]["strategy_sampling"],
+        node_style_build=config["model"]["node_style_build"],
         device=device,
     )
 
@@ -224,6 +238,7 @@ def main():  # pylint: disable=R0914
         predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
         strategy_sampling=config["training"]["strategy_sampling"],
+        node_style_build=config["model"]["node_style_build"],
         device=device,
     )
 
@@ -234,10 +249,9 @@ def main():  # pylint: disable=R0914
 
     val_dataloaders = {"val": val_dataloader}
 
-    if config["data"]["name"] == "build_datasets_with_selected_by_random_samples":
+    if config["data"]["name"] == "md_by_sevennet_with_selected_by_random_samples":
         val_dataloaders["rnd"] = rnd_dataloader
     net = select_model(config, irreps_in, irreps_out)
-    config["model"]["number_of_parameters"] = sum(p.numel() for p in net.parameters())
     trainer = Trainer(net, train_dataloader, val_dataloaders, config)
     trainer.train()
 

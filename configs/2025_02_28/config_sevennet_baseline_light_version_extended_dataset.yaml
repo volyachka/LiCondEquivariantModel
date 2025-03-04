@@ -1,16 +1,14 @@
 # General settings
-experiment_name: "baseline_random_clip_0.01_constant_lr"
+experiment_name: "baseline_sevennet_clip_0.01_constant_lr_0.001_num_noisy_configs_1"
 comment: "potentials by sevennet"
 output_dir: "/mnt/hdd/turchina/saved_models" 
  
 # Data configuration
 data:
-  name: "md_by_sevennet"
-  data_path: "data/sevennet_slopes.csv"
-  target_column: "v1_Li_slope"
-  temperature: 1000
-  noise_std: 0.1
+  name: "extended_md_by_sevennet"
+  root_folder: "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-21"
   batch_size: 10
+  noise_std: 0.1
   num_workers: 4  
   test_size: 0.2
   random_state: 42
@@ -30,22 +28,10 @@ model:
   predict_importance: False
   pool_nodes: False
   num_nodes: 1.0
+  node_style_build: "full_atoms"
 
 scheduler:
   name: "constant_lr"
-  parameterers:
-    warmup_scheduler: "LinearLR"
-    warmup_epochs: 3
-    warmup_decay: 0.1
-    main_scheduler: "CosineAnnealingLR"
-
-# scheduler:
-#   name: "sequential_lr"
-#   parameterers:
-#     warmup_scheduler: "LinearLR"
-#     warmup_epochs: 3
-#     warmup_decay: 0.1
-#     main_scheduler: "CosineAnnealingLR"
 
 optimizer:
   name: "Adam"
@@ -64,15 +50,17 @@ training:
   softmax_within_single_structure_by_atoms: False
   softmax_within_single_atom_by_configurations: True
   softmax_within_configurations: False
-  predict_per_atom: False
+  predict_per_atom: True
   strategy_sampling: "gaussian_noise"
 
 property_predictor:
-  name: "Random"
-  property_config: {}
+  name: "sevennet"
+  property_config:
+    checkpoint: "7net-0"
+    batch_size: 50
   
 wandb:
-  verbose: True
+  verbose: False
   project_name: "LiCondEquivariantModel"
   entity_name: "licondequvariantmodel"
 

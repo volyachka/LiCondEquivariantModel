@@ -43,6 +43,7 @@ def test_graph_building(dataset):
         predict_per_atom=False,
         clip_value=0.01,
         strategy_sampling="trajectory",
+        node_style_build="full_atoms",
         device="cuda",
     )
 
@@ -59,6 +60,7 @@ def test_graph_building(dataset):
         predict_per_atom=False,
         clip_value=0.01,
         strategy_sampling="trajectory",
+        node_style_build="full_atoms",
         device="cuda",
     )
 
