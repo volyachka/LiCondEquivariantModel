@@ -10,23 +10,34 @@ from typing import Any, List, Tuple, Optional, Literal
 import random
 
 # Third-party imports
-import joblib
 import numpy as np
-import torch
 import pandas as pd
+import torch
+import joblib
+from joblib import Memory
+from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.loader.dataloader import Collater
+
+# ASE imports (grouped)
+import ase
+from ase import Atoms
 from ase.io import read
 from ase.neighborlist import NeighborList
-import ase.io
+from ase.calculators.singlepoint import SinglePointCalculator
+
+# Pymatgen imports
 from pymatgen.io.ase import AseAtomsAdaptor, MSONAtoms
-from modules.utils import get_cleaned_neighbours, get_cleaned_neighbours_li_grouped
-from modules.property_prediction import SevenNetPropertiesPredictor
 
 # First-party imports
-from modules.utils import query_mpid_structure
+from modules.utils import (
+    get_cleaned_neighbours,
+    get_cleaned_neighbours_li_grouped,
+    query_mpid_structure,
+)
+from modules.property_prediction import SevenNetPropertiesPredictor
 
 
 def split_dataset_train_val_part(
@@ -69,8 +80,48 @@ def build_dataloaders_from_dataset(
     return train_dataloader, val_dataloader
 
 
+_memory = Memory("/mnt/hdd/turchina/extended_sevennet")
+
+
+@_memory.cache
+def _load_traj_cached(traj_path: str, skip_first_fs: int, step_size_fs: int):
+
+    structs = read(traj_path, index=slice(skip_first_fs, None, step_size_fs))
+    reference_symbols = list(map(str, structs[0].get_chemical_symbols()))
+    reference_cell = structs[0].cell.array
+
+    for s in structs:
+        if list(map(str, s.get_chemical_symbols())) != reference_symbols:
+            raise ValueError("All structures must have the same atomic symbols.")
+        if not np.allclose(s.cell.array, reference_cell):
+            raise ValueError("All structures must have the same cell dimensions.")
+
+    symbols = list(map(str, structs[0].symbols))
+    cell = structs[0].cell.array
+    xyz = np.stack([s.positions for s in structs])
+    energies = np.stack([s.get_potential_energy() for s in structs])
+    forces = np.stack([s.get_forces() for s in structs])
+
+    return {
+        "symbols": symbols,
+        "cell": cell,
+        "xyz": xyz,
+        "energies": energies,
+        "forces": forces,
+    }
+
+
+def _from_dict_to_snapshots(data: dict):
+    snapshots = []
+    for pos, forces, energy in zip(data["xyz"], data["forces"], data["energies"]):
+        atoms = Atoms(symbols=data["symbols"], positions=pos, cell=data["cell"])
+        atoms.calc = SinglePointCalculator(atoms, energy=energy, forces=forces)
+        snapshots.append(atoms)
+        return snapshots
+
+
 def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
-    root_folder: str,
+    root_folders: List[str],
     clip_value: float,
     cutoff: float,
     strategy_sampling: str,
@@ -81,80 +132,91 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
     Constructs an extended dataset of atomic structures with diffusion properties
     based on sevennet inputs.
     """
-    assert strategy_sampling in {"snapshots", "gaussian_noise"}
-    slopes_file = os.path.join(root_folder, "slopes.json")
-
-    with open(slopes_file, "r", encoding="utf-8") as file:
-        slopes_info = json.load(file)
-
+    assert strategy_sampling in {
+        "trajectory",
+        "gaussian_noise",
+        "trajectory_per_interval",
+    }
     dataset = []
-
     idx = 0
-    for folder in os.listdir(root_folder):
-        if "runs-1000K" in folder:
-            for mp_id in os.listdir(os.path.join(root_folder, folder)):
-                if (
-                    ".output" not in mp_id
-                    and ".dvc" not in mp_id
-                    and ".gitignore" not in mp_id
-                ):
-                    name = os.path.join(folder, mp_id)
-                    if name in slopes_info.keys():
-                        log_diffusion = {}
-                        for element, value in slopes_info[name].items():
-                            log_diffusion[element] = np.log10(max(clip_value, value))
-                    else:
-                        continue
 
-                    full_path = os.path.join(root_folder, folder, mp_id)
+    for root_folder in root_folders:
+        slopes_file = os.path.join(root_folder, "slopes.json")
 
-                    if strategy_sampling == "snapshots":
-                        traj_path = os.path.join(full_path, "md.traj")
-                        snapshots = ase.io.read(
-                            traj_path, index=slice(skip_first_fs, None, step_size_fs)
-                        )
+        with open(slopes_file, "r", encoding="utf-8") as file:
+            slopes_info = json.load(file)
 
-                        cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
+        for folder in os.listdir(root_folder):
+            if "runs-1000K" in folder:
+                for mp_id in os.listdir(os.path.join(root_folder, folder)):
+                    if (
+                        ".output" not in mp_id
+                        and ".dvc" not in mp_id
+                        and ".gitignore" not in mp_id
+                    ):
+                        name = os.path.join(folder, mp_id)
+                        if name in slopes_info.keys():
+                            log_diffusion = {}
+                            for element, value in slopes_info[name].items():
+                                log_diffusion[element] = np.log10(
+                                    max(clip_value, value)
+                                )
+                        else:
+                            continue
 
-                        nl = NeighborList(
-                            cuttofs, self_interaction=True, bothways=True, skin=0.5
-                        )
+                        full_path = os.path.join(root_folder, folder, mp_id)
 
-                        dataset.append(
-                            Data(
-                                {
-                                    "idx": idx,
-                                    "log_diffusion": log_diffusion,
-                                    "snapshots": snapshots,
-                                    "nl": nl,
-                                }
+                        if strategy_sampling == "trajectory":
+                            traj_path = os.path.join(full_path, "md.traj")
+
+                            cached_dict_info = _load_traj_cached(
+                                traj_path, skip_first_fs, step_size_fs
                             )
-                        )
+                            snapshots = _from_dict_to_snapshots(cached_dict_info)
 
-                    elif strategy_sampling == "gaussian_noise":
-                        relaxed_structure_path = os.path.join(
-                            full_path, "relax_02.traj"
-                        )
-                        relaxed_structure = read(relaxed_structure_path, index=-1)
-                        calculator_path = os.path.join(full_path, "atoms.pkl")
-                        relaxed_structure.calc = joblib.load(calculator_path).calc
-                        cuttofs = len(relaxed_structure.get_positions()) * [cutoff / 2]
+                            cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
 
-                        nl = NeighborList(
-                            cuttofs, self_interaction=True, bothways=True, skin=0.5
-                        )
-                        dataset.append(
-                            Data(
-                                {
-                                    "atoms": relaxed_structure,
-                                    "log_diffusion": log_diffusion,
-                                    "nl": nl,
-                                    "idx": idx,
-                                }
+                            nl = NeighborList(
+                                cuttofs, self_interaction=True, bothways=True, skin=0.5
                             )
-                        )
 
-                    idx += 1
+                            dataset.append(
+                                Data(
+                                    {
+                                        "idx": idx,
+                                        "log_diffusion": log_diffusion,
+                                        "snapshots": snapshots,
+                                        "nl": nl,
+                                    }
+                                )
+                            )
+
+                        elif strategy_sampling == "gaussian_noise":
+                            relaxed_structure_path = os.path.join(
+                                full_path, "relax_02.traj"
+                            )
+                            relaxed_structure = read(relaxed_structure_path, index=-1)
+                            calculator_path = os.path.join(full_path, "atoms.pkl")
+                            relaxed_structure.calc = joblib.load(calculator_path).calc
+                            cuttofs = len(relaxed_structure.get_positions()) * [
+                                cutoff / 2
+                            ]
+
+                            nl = NeighborList(
+                                cuttofs, self_interaction=True, bothways=True, skin=0.5
+                            )
+                            dataset.append(
+                                Data(
+                                    {
+                                        "atoms": relaxed_structure,
+                                        "log_diffusion": log_diffusion,
+                                        "nl": nl,
+                                        "idx": idx,
+                                    }
+                                )
+                            )
+                        print(idx)
+                        idx += 1
     return dataset
 
 
@@ -168,7 +230,6 @@ def build_superionic_toy_dataset(  # pylint: disable=R0914
     dataset = []
 
     run_folder = os.path.join(root_folder, "runs")
-
     slopes_file = os.path.join(root_folder, "slopes.json")
 
     with open(slopes_file, "r", encoding="utf-8") as file:
@@ -272,7 +333,6 @@ def build_dataset(  # pylint: disable=R0914
         structure = doc["structure"]
 
         atoms = AseAtomsAdaptor.get_atoms(structure)
-        atoms.info["idx"] = idx
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
@@ -282,7 +342,9 @@ def build_dataset(  # pylint: disable=R0914
         cuttofs = len(atoms.get_positions()) * [cutoff]
         nl = NeighborList(cuttofs, self_interaction=True, bothways=True, skin=0.5)
 
-        dataset.append(Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl}))
+        dataset.append(
+            Data({"atoms": atoms, "log_diffusion": log_diffusion, "nl": nl, "idx": idx})
+        )
 
     return dataset
 
@@ -309,6 +371,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         strategy_sampling: str,
         node_style_build: str,
         device: Any,
+        sample_first_five_seconds: bool = False,
         follow_batch: Optional[List[str]] = None,
         exclude_keys: Optional[List[str]] = None,
     ):
@@ -326,9 +389,14 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         self.device = device
         self.strategy_sampling = strategy_sampling
         self.node_style_build = node_style_build
+        self.sample_first_five_seconds = sample_first_five_seconds
 
         assert self.upd_neigh_style in {"update_class", "call_func"}
-        assert self.strategy_sampling in {"gaussian_noise", "trajectory"}
+        assert self.strategy_sampling in {
+            "gaussian_noise",
+            "trajectory",
+            "trajectory_per_interval",
+        }
         assert self.node_style_build in {"li_grouped", "full_atoms"}
         self.nl_builders = {}
 
@@ -552,13 +620,37 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                     forces_batch = properites["forces"]
                     energy_batch = properites["energy"]
 
-            case "trajectory":
+            case "trajectory" | "trajectory_per_interval":
                 for data in batch:
-                    atoms_batch.extend(
-                        random.sample(
-                            data.x["snapshots"], self.num_noisy_configurations
+                    if self.strategy_sampling == "trajectory":
+                        atoms_batch.extend(
+                            random.sample(
+                                data.x["snapshots"], self.num_noisy_configurations
+                            )
                         )
-                    )
+                    elif self.strategy_sampling == "trajectory_per_interval":
+
+                        if self.sample_first_five_seconds:
+                            start_interval = 0
+                            end_interval = 50
+                            atoms_batch.extend(
+                                random.sample(
+                                    data.x["snapshots"][start_interval:end_interval],
+                                    self.num_noisy_configurations,
+                                )
+                            )
+                        else:
+                            start_interval = random.randint(
+                                0, len(data.x["snapshots"]) - 50
+                            )
+                            end_interval = start_interval + 50
+
+                            atoms_batch.extend(
+                                random.sample(
+                                    data.x["snapshots"][start_interval:end_interval],
+                                    self.num_noisy_configurations,
+                                )
+                            )
 
                     masses_batch.extend(
                         self.num_noisy_configurations * [atoms_batch[-1].get_masses()]
@@ -657,11 +749,9 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
     docs = query_mpid_structure(mpids=mpids)
 
     dataset = []
-    for idx, doc in enumerate(docs):
+    for idx, doc in enumerate(tqdm(docs)):
         material_id = doc["material_id"]
-        structure = doc["structure"]
-        atoms = AseAtomsAdaptor.get_atoms(structure)
-        atoms.info["idx"] = idx
+
         log_diffusion = np.log10(
             df[(df["mpid"] == material_id) & (df["temperature"] == temp)][
                 li_column
@@ -672,9 +762,7 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
             f"/mnt/hdd/maevskiy/MLIAP-MD-data/gpu_prod/{material_id}-T1000/md.traj"
         )
 
-        snapshots = ase.io.read(
-            traj_path, index=slice(skip_first_fs, None, step_size_fs)
-        )
+        snapshots = read(traj_path, index=slice(skip_first_fs, None, step_size_fs))
 
         cuttofs = len(snapshots[0].get_positions()) * [cutoff / 2]
         nl = NeighborList(cuttofs, self_interaction=True, bothways=True, skin=0.5)

@@ -90,7 +90,7 @@ def select_dataset(config: dict):
             )
         case "extended_md_by_sevennet":
             return build_extended_sevennet(
-                root_folder=config["data"]["root_folder"],
+                root_folders=config["data"]["root_folders"],
                 clip_value=config["data"]["clip_value"],
                 cutoff=config["model"]["radial_cutoff"],
                 strategy_sampling=config["training"]["strategy_sampling"],
@@ -178,6 +178,7 @@ def main():  # pylint: disable=R0914
     )
 
     dataset = select_dataset(config)
+    print(dataset)
     if config["data"]["name"] == "md_by_sevennet_with_selected_by_random_samples":
         dataset, rnd_dataset = dataset[0], dataset[1]
         rnd_predictor = select_property_predictor(config, rnd_dataset, device)

@@ -6,7 +6,9 @@ output_dir: "/mnt/hdd/turchina/saved_models"
 # Data configuration
 data:
   name: "extended_md_by_sevennet"
-  root_folder: "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-21"
+  root_folders: ["/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-19",
+                "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-20",
+                "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-21"]
   batch_size: 10
   noise_std: 0.1
   num_workers: 4  
@@ -40,14 +42,14 @@ scheduler:
 
 optimizer:
   name: "Adam"
-  learning_rate: 0.001
+  learning_rate: 0.01
 
 # Training hyperparameters
 training:
   num_noisy_configurations: 1
   criterion: "MSELoss"  
   num_epochs: 500
-  device: "cuda:0"
+  device: "cuda:1"
   save_model_every_n_epochs: 20
   forces_divided_by_mass: True
   use_displacements: False
