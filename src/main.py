@@ -77,8 +77,8 @@ def select_dataset(config: dict):
                 temp=config["data"]["temperature"],
                 clip_value=config["data"]["clip_value"],
                 cutoff=config["model"]["radial_cutoff"],
-                skip_first_fs=config["data"]["skip_first_fs"],
-                step_size_fs=config["data"]["step_size_fs"],
+                skip_first_fs=config["data"].get("skip_first_fs", None),
+                step_size_fs=config["data"].get("step_size_fs", None),
             )
         case "md_by_sevennet_with_selected_by_random_samples":
             return build_datasets_with_selected_by_random_samples(
@@ -94,8 +94,8 @@ def select_dataset(config: dict):
                 clip_value=config["data"]["clip_value"],
                 cutoff=config["model"]["radial_cutoff"],
                 strategy_sampling=config["training"]["strategy_sampling"],
-                skip_first_fs=config["model"].get("skip_first_fs", None),
-                step_size_fs=config["model"].get("step_size_fs", None),
+                skip_first_fs=config["data"].get("skip_first_fs", None),
+                step_size_fs=config["data"].get("step_size_fs", None),
             )
         case _:
             raise NotImplementedError()
@@ -178,7 +178,6 @@ def main():  # pylint: disable=R0914
     )
 
     dataset = select_dataset(config)
-    print(dataset)
     if config["data"]["name"] == "md_by_sevennet_with_selected_by_random_samples":
         dataset, rnd_dataset = dataset[0], dataset[1]
         rnd_predictor = select_property_predictor(config, rnd_dataset, device)
@@ -193,7 +192,6 @@ def main():  # pylint: disable=R0914
             use_displacements=config["training"]["use_displacements"],
             use_energies=config["training"]["use_energies"],
             upd_neigh_style=config["data"]["upd_neigh_style"],
-            predict_per_atom=config["training"]["predict_per_atom"],
             clip_value=config["data"]["clip_value"],
             strategy_sampling=config["training"]["strategy_sampling"],
             node_style_build=config["model"]["node_style_build"],
@@ -202,11 +200,17 @@ def main():  # pylint: disable=R0914
 
     predictor = select_property_predictor(config, dataset, device)
 
+    print(f"length of dataset: {len(dataset)}")
+
     train_dataloader, val_dataloader = build_dataloaders_from_dataset(
         dataset=dataset,
         test_size=config["data"]["test_size"],
         random_state=config["data"]["random_state"],
         batch_size=config["data"]["batch_size"],
+    )
+
+    sample_first_five_seconds = bool(
+        config["training"]["strategy_sampling"] == "trajectory_per_interval"
     )
 
     val_dataloader.collate_fn = AtomsToGraphCollater(
@@ -219,11 +223,11 @@ def main():  # pylint: disable=R0914
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
         upd_neigh_style=config["data"]["upd_neigh_style"],
-        predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
         strategy_sampling=config["training"]["strategy_sampling"],
         node_style_build=config["model"]["node_style_build"],
         device=device,
+        sample_first_five_seconds=sample_first_five_seconds,
     )
 
     train_dataloader.collate_fn = AtomsToGraphCollater(
@@ -236,7 +240,6 @@ def main():  # pylint: disable=R0914
         use_displacements=config["training"]["use_displacements"],
         use_energies=config["training"]["use_energies"],
         upd_neigh_style=config["data"]["upd_neigh_style"],
-        predict_per_atom=config["training"]["predict_per_atom"],
         clip_value=config["data"]["clip_value"],
         strategy_sampling=config["training"]["strategy_sampling"],
         node_style_build=config["model"]["node_style_build"],

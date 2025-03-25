@@ -85,7 +85,7 @@ _memory = Memory("/mnt/hdd/turchina/extended_sevennet")
 
 @_memory.cache
 def _load_traj_cached(traj_path: str, skip_first_fs: int, step_size_fs: int):
-
+    assert step_size_fs is not None
     structs = read(traj_path, index=slice(skip_first_fs, None, step_size_fs))
     reference_symbols = list(map(str, structs[0].get_chemical_symbols()))
     reference_cell = structs[0].cell.array
@@ -117,7 +117,7 @@ def _from_dict_to_snapshots(data: dict):
         atoms = Atoms(symbols=data["symbols"], positions=pos, cell=data["cell"])
         atoms.calc = SinglePointCalculator(atoms, energy=energy, forces=forces)
         snapshots.append(atoms)
-        return snapshots
+    return snapshots
 
 
 def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
@@ -166,7 +166,11 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
 
                         full_path = os.path.join(root_folder, folder, mp_id)
 
-                        if strategy_sampling == "trajectory":
+                        if strategy_sampling in {
+                            "trajectory",
+                            "trajectory_per_interval",
+                        }:
+
                             traj_path = os.path.join(full_path, "md.traj")
 
                             cached_dict_info = _load_traj_cached(
@@ -180,6 +184,7 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                                 cuttofs, self_interaction=True, bothways=True, skin=0.5
                             )
 
+                            print(len(snapshots))
                             dataset.append(
                                 Data(
                                     {
@@ -215,6 +220,7 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                                     }
                                 )
                             )
+
                         print(idx)
                         idx += 1
     return dataset
@@ -366,7 +372,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         use_energies: bool,
         num_noisy_configurations: int,
         upd_neigh_style: Literal["update_class", "call_func"],
-        predict_per_atom: bool,
         clip_value: float,
         strategy_sampling: str,
         node_style_build: str,
@@ -384,7 +389,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         self.use_displacements = use_displacements
         self.use_energies = use_energies
         self.upd_neigh_style = upd_neigh_style
-        self.predict_per_atom = predict_per_atom
         self.clip_value = clip_value
         self.device = device
         self.strategy_sampling = strategy_sampling
@@ -533,26 +537,26 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             if self.use_energies:
                 value = torch.cat((value, energy.repeat(value.shape[0], 1)), dim=1)
 
-            if self.predict_per_atom:
-                target = torch.full(
-                    (forces.shape[0],), self.clip_value, device=value.device
-                )
-                idx = torch.full((forces.shape[0],), idx, device=value.device)
-                symbols = np.array(noise_structure.get_chemical_symbols())
+            target = torch.full(
+                (forces.shape[0],), self.clip_value, device=value.device
+            )
+            idx = torch.full((forces.shape[0],), idx, device=value.device)
+            symbols = np.array(noise_structure.get_chemical_symbols())
 
-                if isinstance(log_diffusion, dict):
-                    for element, diffusion in log_diffusion.items():
-                        mask = symbols == element
-                        target[mask] = diffusion
-                else:
-                    mask = symbols == "Li"
-                    target[mask] = log_diffusion
+            if isinstance(log_diffusion, dict):
+                unique_symbols = list(log_diffusion.keys())
+                for element, diffusion in log_diffusion.items():
+                    mask = symbols == element
+                    target[mask] = diffusion
             else:
-                target = torch.tensor(
-                    log_diffusion, dtype=torch.float32, device=value.device
-                )
+                mask = symbols == "Li"
+                target[mask] = log_diffusion
 
-                idx = torch.tensor(deepcopy(idx))
+            # else:
+            #     target = torch.tensor(
+            #         log_diffusion, dtype=torch.float32, device=value.device
+            #     )
+            # idx = torch.tensor(deepcopy(idx))
 
             assert torch.isnan(value).any().item() is False
 
@@ -573,6 +577,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 edge_shift=torch.tensor(edge_shift, dtype=torch.float32),
                 symbols=np.array(noise_structure.get_chemical_symbols()),
                 idx=idx,
+                unique_symbols=np.array(unique_symbols),
             )
 
             atoms_list.append(data)
@@ -655,6 +660,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                     masses_batch.extend(
                         self.num_noisy_configurations * [atoms_batch[-1].get_masses()]
                     )
+
                     log_diffusion_batch.extend(
                         self.num_noisy_configurations * [data.x["log_diffusion"]]
                     )
@@ -750,6 +756,7 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
 
     dataset = []
     for idx, doc in enumerate(tqdm(docs)):
+        print(idx)
         material_id = doc["material_id"]
 
         log_diffusion = np.log10(

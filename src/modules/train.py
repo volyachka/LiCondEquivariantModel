@@ -6,6 +6,7 @@ Handles data loading, processing, training, and evaluation.
 import os
 from typing import List  # Standard library imports first
 from datetime import datetime
+from pymatgen.core.periodic_table import Element
 
 # Third-party imports
 import numpy as np
@@ -18,7 +19,56 @@ from tqdm import tqdm, trange
 import wandb
 
 
-class Trainer:  # pylint: disable=R0902, R0914, R0915
+def get_chemical_number(element_symbol: str) -> int:
+    """
+    Get the atomic number of an element given its symbol.
+    """
+    atomic_number = Element(element_symbol).Z
+    return atomic_number
+
+
+def get_element_symbol(atomic_number: int) -> str:
+    """
+    Get the element symbol from an atomic number.
+    """
+    if atomic_number == 0:
+        return "conductivity_less_than_clip_value"
+    element = Element.from_Z(atomic_number)
+    return element.symbol.lower()
+
+
+def scatter_mse_loss(target, pred, index, reduction="mean"):
+    """
+    Compute Scatter Mean Squared Error (MSE) Loss.
+
+    Args:
+        pred (Tensor): Predicted values (batch_size,)
+        target (Tensor): Ground truth values (batch_size,)
+        index (Tensor): Indices (batch_size,)
+        reduction (str): Reduction type ('mean' or 'sum')
+
+    Returns:
+        Tensor: The computed loss
+    """
+
+    squared_error = (pred - target) ** 2
+    scatter_squared_error = torch_scatter.scatter_sum(squared_error, index, dim=0)
+    normalization = torch_scatter.scatter_sum(
+        torch.ones(squared_error.shape, device=squared_error.device), index, dim=0
+    )
+
+    scatter_squared_error /= normalization
+
+    if reduction == "mean":
+        return scatter_squared_error.mean()
+    if reduction == "sum":
+        return scatter_squared_error.sum()
+    if reduction is None:
+        return scatter_squared_error
+    raise NotImplementedError("Unknown type of aggregation")
+
+
+class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
     """
     Trainer class for managing model training and validation.
     """
@@ -43,6 +93,7 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
         self.name = "_".join([self.config["experiment_name"], formatted_time])
 
         self.training_config = config["training"]
+        self.prediction_strategy = self.training_config["prediction_strategy"]
         self.device = self.training_config.get(
             "device", "cuda" if torch.cuda.is_available() else "cpu"
         )
@@ -61,7 +112,7 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
         ]
 
         assert sum(modes) == 1
-        if self.training_config["predict_per_atom"]:
+        if self.prediction_strategy in ("PerChemicalElement", "PerAtom"):
             assert (
                 self.training_config["softmax_within_single_atom_by_configurations"]
                 is True
@@ -75,7 +126,6 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
             self.mode = "softmax_within_configurations"
 
         self.predict_importance = self.config["model"]["predict_importance"]
-        self.predict_per_atom = self.config["training"]["predict_per_atom"]
         # constant_lr, sequential_lr
         match self.config["scheduler"]["name"]:
             case "constant_lr":
@@ -129,6 +179,10 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
             tags.append(self.config["data"]["name"])
             tags.append(self.config["model"]["node_style_build"])
 
+            config["model"]["num_parameters"] = sum(
+                p.numel() for p in model.parameters()
+            )
+
             self.run = wandb.init(
                 entity=config["wandb"]["entity_name"],
                 project=config["wandb"]["project_name"],
@@ -155,111 +209,94 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
             )
         raise NotImplementedError(f"Unsupported optimizer: {optimizer_name}")
 
-    def _thorough_validation(self, dataloader, num_validations=20):
+    def _thorough_validation(self, dataloader, num_validations=5):
         y_pred_agg = []
-        li_pred_agg = []
-
         results = {}
+
         for _ in trange(num_validations):
             preds_epoch = []
             indexes_epoch = []
-            li_pred_epoch = []
-            li_indexes_epoch = []
 
             with torch.set_grad_enabled(False):
                 for data, num_atoms in tqdm(dataloader):
-                    _, _, batch_y_pred, _ = self._process_batch(
-                        data, num_atoms, train=False
-                    )
 
-                    if self.predict_per_atom:
-                        li_mask = np.concatenate(data["symbols"]) == "Li"
-                        li_pred_epoch.extend(batch_y_pred[li_mask])
-                        li_indexes_epoch.extend(
-                            data["idx"][
-                                :: self.config["training"]["num_noisy_configurations"]
-                            ][li_mask]
-                        )
+                    result = self._process_batch(data, num_atoms, train=False)
 
-                    preds_epoch.extend(batch_y_pred)
-                    indexes_epoch.extend(
-                        data["idx"][
-                            :: self.config["training"]["num_noisy_configurations"]
-                        ]
-                    )
+                    preds_epoch.extend(result["y_pred"])
+                    indexes_epoch.extend(result["data_id"])
 
-            preds_epoch = torch.stack(preds_epoch).cpu().detach().numpy()
+            preds_epoch = torch.stack(preds_epoch).cpu().detach()
             indexes_epoch = torch.stack(indexes_epoch).cpu().detach().numpy()
             indexes_epoch = np.argsort(indexes_epoch)
             y_pred_agg.append(preds_epoch[indexes_epoch])
 
-            if self.predict_per_atom:
-                li_pred_epoch = torch.stack(li_pred_epoch).cpu().detach().numpy()
-                li_indexes_epoch = torch.stack(li_indexes_epoch).cpu().detach().numpy()
-                li_indexes_epoch = np.argsort(li_indexes_epoch)
-                li_pred_agg.append(li_pred_epoch[li_indexes_epoch])
-
-        y_pred = np.vstack(y_pred_agg).mean(axis=0)
-
-        if self.predict_per_atom:
-            li_pred = np.vstack(li_pred_agg).mean(axis=0)
-            li_idx_true = []
-            li_true = []
+        y_pred = torch.vstack(y_pred_agg).mean(axis=0)
 
         y_true = []
+        mask = []
         idx_true = []
 
         for i, _ in dataloader:
-            y_true.append(i.y)
-            idx_true.append(i.idx)
+            batch_y_true = i.y[:: self.num_noisy_configurations]
+            data_id = i.idx[:: self.num_noisy_configurations]
+            batch_id = i.batch[:: self.num_noisy_configurations].cpu().detach().numpy()
 
-            if self.predict_per_atom:
-                li_mask = np.concatenate(i.symbols) == "Li"
-                li_true.append(i.y[li_mask])
-                li_idx_true.append(i.idx[li_mask])
+            if self.prediction_strategy == "PerSingleLi":
+                mask.extend(np.concatenate(i.symbols[:: self.num_noisy_configurations]))
+                y_true.append(batch_y_true)
+                idx_true.append(data_id)
 
-        y_true = (
-            torch.concatenate(y_true)
-            .cpu()
-            .detach()
-            .numpy()[:: self.config["training"]["num_noisy_configurations"]]
-        )
+            if self.prediction_strategy == "PerChemicalElement":
+                unique_symbols = np.concatenate(
+                    i.symbols[:: self.num_noisy_configurations]
+                )
+                mask_id = 100 * batch_id + np.vectorize(get_chemical_number)(
+                    unique_symbols
+                )
+                _, indexes = np.unique(mask_id, return_inverse=True)
+                indexes = torch.tensor(indexes, device=self.device)
 
-        idx_true = (
-            torch.concatenate(idx_true)
-            .cpu()
-            .detach()
-            .numpy()[:: self.config["training"]["num_noisy_configurations"]]
-        )
+                batch_y_true_by_elements = torch_scatter.scatter_mean(
+                    batch_y_true, indexes, dim=0
+                )
+                batch_y_true_id = torch_scatter.scatter_mean(
+                    torch.tensor(mask_id, device=self.device), indexes, dim=0
+                )
+                batch_data_id = torch_scatter.scatter_mean(data_id, indexes, dim=0)
+                mask.extend(batch_y_true_id.cpu().numpy())
+                y_true.append(batch_y_true_by_elements)
+                idx_true.append(batch_data_id)
+
+            if self.prediction_strategy == "PerSingleLi":
+                batch_data_id = torch_scatter.scatter_mean(batch_id, indexes, dim=0)
+                y_true.append(batch_y_true)
+                idx_true.append(batch_data_id)
+
+        y_true = torch.concatenate(y_true).cpu().detach()
+
+        idx_true = torch.concatenate(idx_true).cpu().detach()
 
         y_true = y_true[np.argsort(idx_true)]
-
-        if self.predict_per_atom:
-            li_true = (
-                torch.concatenate(li_true)
-                .cpu()
-                .detach()
-                .numpy()[:: self.config["training"]["num_noisy_configurations"]]
-            )
-
-            li_idx_true = (
-                torch.concatenate(li_idx_true)
-                .cpu()
-                .detach()
-                .numpy()[:: self.config["training"]["num_noisy_configurations"]]
-            )
-
-            li_true = li_true[np.argsort(li_idx_true)]
-
-            results["li_thorough_r2"] = r2_score(li_true, li_pred)
-            results["li_thorough_loss"] = mean_squared_error(li_true, li_pred)
-            results["li_true"] = li_true
-            results["li_pred"] = li_pred
 
         results["thorough_r2"] = r2_score(y_true, y_pred)
         results["thorough_loss"] = mean_squared_error(y_true, y_pred)
         results["y_true"] = y_true
         results["y_pred"] = y_pred
+
+        if self.prediction_strategy != "PerSingleLi":
+            mask = np.stack(mask)
+            mask = mask[np.argsort(idx_true)]
+            if self.prediction_strategy == "PerAtom":
+                li_mask = mask == "Li"
+            elif self.prediction_strategy == "PerChemicalElement":
+                li_mask = mask % 100 == 3
+
+            li_true = y_true[li_mask]
+            li_pred = y_pred[li_mask]
+            results["li_true"] = li_true.numpy()
+            results["li_pred"] = li_pred.numpy()
+            results["li_thorough_loss"] = self.criterion(li_pred, li_true)
+            results["li_thorough_r2"] = r2_score(li_true.numpy(), li_pred.numpy())
 
         return results
 
@@ -364,7 +401,7 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
 
         assert torch.equal(idx_1, idx_2)
 
-        if self.predict_per_atom:
+        if self.prediction_strategy in ("PerChemicalElement", "PerAtom"):
             final_predictions = intermediate_predictions.squeeze()
         else:
             final_predictions = torch_scatter.scatter_mean(
@@ -374,16 +411,48 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
                 final_predictions = final_predictions.squeeze()
 
         y_true = data["y"][:: self.num_noisy_configurations]
+        batch_id = (
+            data["batch"][:: self.num_noisy_configurations].cpu().detach().numpy()
+        )
         y_pred = final_predictions.detach()
 
-        if len(num_atoms) == 1:
-            final_predictions = final_predictions.unsqueeze(0)
-            y_pred = y_pred.unsqueeze(0)
         assert final_predictions.shape == y_true.shape
 
-        loss = self.criterion(final_predictions, y_true)
+        unique_symbols = np.concatenate(
+            data["symbols"][:: self.num_noisy_configurations]
+        )
 
-        return loss, y_true, y_pred, entropy
+        result = {}
+        if self.prediction_strategy == "PerChemicalElement":
+            mask = 100 * batch_id + np.vectorize(get_chemical_number)(unique_symbols)
+            # это нужно потому что в mask принадлежит очень большой интервал и куча нулевых позиций
+            elements_values, indexes = np.unique(mask, return_inverse=True)
+            indexes = torch.tensor(indexes, device=self.device)
+            y_pred_by_elements = torch_scatter.scatter_mean(
+                final_predictions, indexes, dim=0
+            )
+            y_true_by_elements = torch_scatter.scatter_mean(y_true, indexes, dim=0)
+            y_true_id = torch_scatter.scatter_mean(
+                torch.tensor(mask, device=self.device), indexes, dim=0
+            )
+
+            result["y_true"] = y_true_by_elements.detach()
+            result["y_pred"] = y_pred_by_elements.detach()
+            result["loss"] = self.criterion(y_true_by_elements, y_pred_by_elements)
+            result["data_id"] = y_true_id
+            result["elements_values"] = elements_values
+
+        elif self.prediction_strategy == "PerAtom":
+            result["loss"] = self.criterion(y_true, final_predictions)
+            result["y_true"] = y_true
+            result["y_pred"] = y_pred
+            result["mask"] = unique_symbols
+
+        result["entropy"] = entropy
+        # result["unique_symbols"] = unique_symbols
+        # result["elements_values"] = elements_values
+        # result["indexes"] = indexes
+        return result
 
     def _run_epoch(self, dataloader, train=True):  # pylint: disable=R0912, R0914
         """Run a single epoch of training or validation."""
@@ -395,35 +464,58 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
         total_loss = 0.0
         num_samples = 0
         y_true, y_pred = [], []
-        if self.predict_per_atom:
-            li_true, li_pred = [], []
+
+        if self.prediction_strategy in ("PerChemicalElement", "PerAtom"):
+            mask = []
 
         entropy = []
 
         with torch.set_grad_enabled(train):
             for data, num_atoms in tqdm(dataloader):
-                batch_loss, batch_y_true, batch_y_pred, batch_entropy = (
-                    self._process_batch(data, num_atoms, train=train)
-                )
+                result = self._process_batch(data, num_atoms, train=train)
+                batch_loss = result["loss"]
+                # unique_symbols = result["unique_symbols"]
+                # indexes = result["elements_values"]
+                batch_entropy = result["entropy"]
 
-                if self.predict_per_atom:
-                    li_mask = np.concatenate(data["symbols"]) == "Li"
-                    li_true.extend(batch_y_true[li_mask])
-                    li_pred.extend(batch_y_pred[li_mask])
+                batch_y_true = result["y_true"]
+                batch_y_pred = result["y_pred"]
 
-                total_loss += batch_loss.item() * len(num_atoms)
-                num_samples += len(num_atoms)
+                if self.prediction_strategy == "PerChemicalElement":
+                    total_loss += batch_loss.item() * len(batch_y_true)
+                    num_samples += len(batch_y_true)
+                    mask.extend(result["elements_values"])
+
+                elif self.prediction_strategy == "PerAtom":
+                    batch_y_true = result["y_true"]
+                    batch_y_pred = result["y_pred"]
+                    total_loss += batch_loss.item() * len(batch_y_true)
+                    num_samples += len(batch_y_true)
+
+                    mask.extend(result["mask"])
+
+                    # li_mask = unique_symbols == "Li"
+                    # li_true.extend(batch_y_true[li_mask])
+                    # li_pred.extend(batch_y_pred[li_mask])
+
+                elif self.prediction_strategy == "PerSingleLi":
+                    batch_y_true = result["y_true"]
+                    batch_y_pred = result["y_pred"]
+                    total_loss += batch_loss.item() * len(num_atoms)
+                    num_samples += len(num_atoms)
 
                 if train:
                     if self.config["wandb"]["verbose"]:
                         batch_r2 = r2_score(
                             batch_y_true.cpu().numpy(), batch_y_pred.cpu().numpy()
                         )
+
                         info = {
                             "lr": self.optimizer.param_groups[0]["lr"],
                             "batch_loss": batch_loss.item(),
                             "batch_r2": batch_r2,
                         }
+
                         wandb.log(info, step=self.step)
 
                     self.optimizer.zero_grad()
@@ -450,24 +542,31 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
                 if train:
                     self.step += 1
 
-        y_true = torch.stack(y_true).cpu().detach().numpy()
-        y_pred = torch.stack(y_pred).cpu().detach().numpy()
+        y_true = torch.stack(y_true).cpu().detach()
+        y_pred = torch.stack(y_pred).cpu().detach()
         entropy = torch.stack(entropy).cpu().detach().numpy()
+
+        if self.prediction_strategy != "MSELossPerSingleLi":
+            mask = np.stack(mask)
 
         results = {}
 
-        if self.predict_per_atom:
-            li_true = torch.stack(li_true).cpu().detach()
-            li_pred = torch.stack(li_pred).cpu().detach()
+        results["loss"] = total_loss / num_samples
+        results["r2"] = r2_score(y_true.numpy(), y_pred.numpy())
+        results["mean_entropy"] = entropy.mean()
+
+        if self.prediction_strategy != "PerSingleLi":
+            if self.prediction_strategy == "PerAtom":
+                li_mask = mask == "Li"
+            elif self.prediction_strategy == "PerChemicalElement":
+                li_mask = mask % 100 == 3
+
+            li_true = y_true[li_mask]
+            li_pred = y_pred[li_mask]
             results["li_true"] = li_true.numpy()
             results["li_pred"] = li_pred.numpy()
-
             results["li_loss"] = self.criterion(li_pred, li_true)
             results["li_r2"] = r2_score(li_true.numpy(), li_pred.numpy())
-
-        results["loss"] = total_loss / num_samples
-        results["r2"] = r2_score(y_true, y_pred)
-        results["mean_entropy"] = entropy.mean()
 
         return results
 
@@ -494,6 +593,28 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
         )
 
     def _update_thorough_results(self, name, results, info):
+
+        # if self.predict_per_atom:
+
+        #     for element_symbol in ["conductivity_less_than_clip_value", "li"]:
+        #         info.update(
+        #             {
+        #                 f"{element_symbol}_thorough_{name}_loss":
+        #                   results[f"{element_symbol}_thorough_loss"],
+        #                 f"{element_symbol}_thorough_{name}_r2":
+        #                   results[f"{element_symbol}_thorough_r2"],
+        #             }
+        #         )
+
+        #         self._log_scatter_plot(
+        #             f"{element_symbol}_{name}",
+        #             results[f"{element_symbol}_true"],
+        #             results[f"{element_symbol}_pred"],
+        #             f"{element_symbol}_{name} (per atom)",
+        #         )
+
+        # else:
+
         info.update(
             {
                 f"thorough_{name}_loss": results["thorough_loss"],
@@ -503,19 +624,12 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
 
         self._log_scatter_plot(name, results["y_true"], results["y_pred"], name)
 
-        if self.predict_per_atom:
+        if self.prediction_strategy in ("PerChemicalElement", "PerAtom"):
             info.update(
                 {
                     f"li_thorough_{name}_loss": results["li_thorough_loss"],
                     f"li_thorough_{name}_r2": results["li_thorough_r2"],
                 }
-            )
-
-            self._log_scatter_plot(
-                f"li_{name}",
-                results["y_true"],
-                results["y_pred"],
-                f"li_{name} (per atom)",
             )
 
     def _construct_logging_info_from_thorough_validation(self, info):
@@ -536,16 +650,24 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
             }
         )
 
-        if self.predict_importance:
-            info[f"{prefix}_entropy"] = results["mean_entropy"]
-
-        if self.predict_per_atom:
+        if self.prediction_strategy in ("PerChemicalElement", "PerAtom"):
             info.update(
                 {
                     f"li_{prefix}_loss": results["li_loss"],
                     f"li_{prefix}_r2": results["li_r2"],
                 }
             )
+
+        # if self.predict_importance:
+        #     info[f"{prefix}_entropy"] = results["mean_entropy"]
+
+        # if self.predict_per_atom:
+        #     info.update(
+        #         {
+        #             f"li_{prefix}_loss": results["li_loss"],
+        #             f"li_{prefix}_r2": results["li_r2"],
+        #         }
+        #     )
         return info
 
     def _construct_logging_info(self, epoch, train_results, val_results):
@@ -565,7 +687,6 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915
             train_results = self.train_epoch()
             for name, dataloader in self.val_dataloaders.items():
                 val_results[name] = self.validate_epoch(dataloader)
-
             if self.config["wandb"]["verbose"]:
                 info = self._construct_logging_info(epoch, train_results, val_results)
                 if (

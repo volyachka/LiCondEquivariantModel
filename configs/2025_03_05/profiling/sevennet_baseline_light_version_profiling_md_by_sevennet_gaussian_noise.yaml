@@ -1,0 +1,68 @@
+# General settings
+experiment_name: "baseline_random_clip_0.01_constant_lr_0.01_num_noisy_configs_1"
+comment: "potentials by sevennet"
+output_dir: "/mnt/hdd/turchina/saved_models" 
+ 
+# Data configuration
+data:
+  name: "md_by_sevennet"
+  data_path: "data/sevennet_slopes.csv"
+  target_column: "v1_Li_slope"
+  temperature: 1000
+  noise_std: 0.1
+  batch_size: 10
+  num_workers: 4  
+  test_size: 0.2
+  random_state: 42
+  clip_value: 0.01
+  upd_neigh_style: "update_class"
+
+model:
+  mix_properites: False
+  layers: 3
+  radial_cutoff: 5
+  num_neighbors: 50
+  number_of_basis: 5
+  mul: 25
+  layers: 3
+  lmax: 2
+  fc_neurons: [5]
+  predict_importance: False
+  pool_nodes: False
+  num_nodes: 1.0
+  node_style_build: "full_atoms"
+
+scheduler:
+  name: "constant_lr"
+
+optimizer:
+  name: "Adam"
+  learning_rate: 0.01
+
+# Training hyperparameters
+training:
+  num_noisy_configurations: 1
+  criterion: "MSELoss"  
+  num_epochs: 3
+  device: "cuda:1"
+  save_model_every_n_epochs: 20
+  forces_divided_by_mass: True
+  use_displacements: False
+  use_energies: False
+  softmax_within_single_structure_by_atoms: False
+  softmax_within_single_atom_by_configurations: True
+  softmax_within_configurations: False
+  predict_per_atom: True
+  strategy_sampling: "gaussian_noise"
+
+property_predictor:
+  name: "sevennet"
+  property_config:
+    checkpoint: "7net-0"
+    batch_size: 50
+  
+wandb:
+  verbose: False
+  project_name: "LiCondEquivariantModel"
+  entity_name: "licondequvariantmodel"
+

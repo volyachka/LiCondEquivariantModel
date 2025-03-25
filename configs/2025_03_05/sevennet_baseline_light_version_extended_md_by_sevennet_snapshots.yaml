@@ -1,0 +1,68 @@
+# General settings
+experiment_name: "sevennet_baseline_light_version_extended_md_by_sevennet_snapshots"
+comment: "potentials by sevennet"
+output_dir: "/mnt/hdd/turchina/saved_models" 
+ 
+# Data configuration
+data:
+  name: "extended_md_by_sevennet"
+  root_folders: ["/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-19",
+                "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-20",
+                "/mnt/hdd/maevskiy/SuperionicToy-runs/mp-sevennet/v0-2025-02-21"]
+  batch_size: 10
+  noise_std: 0.1
+  num_workers: 4  
+  test_size: 0.2
+  random_state: 42
+  clip_value: 0.01
+  upd_neigh_style: "update_class"
+
+model:
+  mix_properites: False
+  layers: 3
+  radial_cutoff: 5
+  num_neighbors: 50
+  number_of_basis: 5
+  mul: 25
+  layers: 3
+  lmax: 2
+  fc_neurons: [5]
+  predict_importance: False
+  pool_nodes: False
+  num_nodes: 1.0
+  node_style_build: "full_atoms"
+
+scheduler:
+  name: "constant_lr"
+
+optimizer:
+  name: "Adam"
+  learning_rate: 0.01
+
+# Training hyperparameters
+training:
+  num_noisy_configurations: 1
+  criterion: "MSELoss"  
+  num_epochs: 500
+  device: "cuda:0"
+  save_model_every_n_epochs: 20
+  forces_divided_by_mass: True
+  use_displacements: False
+  use_energies: False
+  softmax_within_single_structure_by_atoms: False
+  softmax_within_single_atom_by_configurations: True
+  softmax_within_configurations: False
+  predict_per_atom: True
+  strategy_sampling: "trajectory"
+
+property_predictor:
+  name: "sevennet"
+  property_config:
+    checkpoint: "7net-0"
+    batch_size: 50
+  
+wandb:
+  verbose: True
+  project_name: "LiCondEquivariantModel"
+  entity_name: "licondequvariantmodel"
+
