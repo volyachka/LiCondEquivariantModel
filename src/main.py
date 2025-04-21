@@ -20,13 +20,15 @@ from modules.property_prediction import (
     SevenNetPropertiesPredictor,
     AseCalculatorPropertiesPredictor,
     RandomPropertiesPredictor,
+    MDTrajectoryPropertiesPredictor,
+    ZeroValuesPropertiesPredictor
 )
 
 from modules.train import Trainer
 
 from modules.dataset import (
     build_dataset,
-    build_dataloaders_from_dataset,
+    split_dataset_train_val_part,
     build_superionic_toy_dataset,
     build_dataset_snapshots_by_sevennet,
     build_datasets_with_selected_by_random_samples,
@@ -117,6 +119,10 @@ def select_property_predictor(config: dict, dataset: List[Data], device: str):
             )
         case "random":
             return RandomPropertiesPredictor(device)
+        case "md_trajectory":
+            return MDTrajectoryPropertiesPredictor(device)
+        case "zero_values": 
+            return ZeroValuesPropertiesPredictor(device)
         case _:
             raise NotImplementedError(
                 f"Unsupported property_predictor: {property_predictor_name}"
@@ -199,15 +205,18 @@ def main():  # pylint: disable=R0914
         )
 
     predictor = select_property_predictor(config, dataset, device)
-
     print(f"length of dataset: {len(dataset)}")
 
-    train_dataloader, val_dataloader = build_dataloaders_from_dataset(
+    train_dataset, val_dataset = split_dataset_train_val_part(
         dataset=dataset,
         test_size=config["data"]["test_size"],
-        random_state=config["data"]["random_state"],
-        batch_size=config["data"]["batch_size"],
+        random_state=config["data"]["random_state"],    
     )
+    batch_size = config["data"]["batch_size"]
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
 
     sample_first_five_seconds = bool(
         config["training"]["strategy_sampling"] == "trajectory_per_interval"
@@ -244,6 +253,7 @@ def main():  # pylint: disable=R0914
         strategy_sampling=config["training"]["strategy_sampling"],
         node_style_build=config["model"]["node_style_build"],
         device=device,
+        sample_first_five_seconds=False,
     )
 
     irreps_in = "2x1o" if config["training"]["use_displacements"] else "1x1o"

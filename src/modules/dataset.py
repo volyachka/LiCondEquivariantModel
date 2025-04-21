@@ -41,8 +41,7 @@ from modules.property_prediction import SevenNetPropertiesPredictor
 
 
 def split_dataset_train_val_part(
-    dataset: List[Data], test_size: int, random_state: int, batch_size: int
-) -> Tuple[DataLoader, DataLoader]:
+    dataset: List[Data], test_size: int, random_state: int) -> Tuple[List[Data], List[Data]]:
     """
     Splits a dataset into training and validation sets, and creates DataLoaders for each.
     """
@@ -55,9 +54,7 @@ def split_dataset_train_val_part(
     train_dataset = [dataset[i] for i in train_indices]
     val_dataset = [dataset[i] for i in val_indices]
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    return train_dataloader, val_dataloader
+    return train_dataset, val_dataset
 
 
 def build_dataloaders_from_dataset(
@@ -136,12 +133,15 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
         "trajectory",
         "gaussian_noise",
         "trajectory_per_interval",
+        "non_sample"
     }
+    
     dataset = []
     idx = 0
 
     for root_folder in root_folders:
         slopes_file = os.path.join(root_folder, "slopes.json")
+        # unique_symbols = set()
 
         with open(slopes_file, "r", encoding="utf-8") as file:
             slopes_info = json.load(file)
@@ -184,7 +184,7 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                                 cuttofs, self_interaction=True, bothways=True, skin=0.5
                             )
 
-                            print(len(snapshots))
+                            # unique_symbols.add(set(snapshots[0].get_chemical_symbols()))
                             dataset.append(
                                 Data(
                                     {
@@ -196,7 +196,7 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                                 )
                             )
 
-                        elif strategy_sampling == "gaussian_noise":
+                        elif strategy_sampling in {"gaussian_noise", "non_sample"}:
                             relaxed_structure_path = os.path.join(
                                 full_path, "relax_02.traj"
                             )
@@ -210,6 +210,9 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                             nl = NeighborList(
                                 cuttofs, self_interaction=True, bothways=True, skin=0.5
                             )
+
+                            # print(relaxed_structure.get_chemical_symbols())
+                            # unique_symbols.add(set(relaxed_structure.get_chemical_symbols()))
                             dataset.append(
                                 Data(
                                     {
@@ -222,6 +225,7 @@ def build_extended_sevennet(  # pylint: disable=R0913, R0914, R0917, R1702
                             )
 
                         print(idx)
+                        # print(unique_symbols)
                         idx += 1
     return dataset
 
@@ -400,6 +404,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             "gaussian_noise",
             "trajectory",
             "trajectory_per_interval",
+            "non_sample"
         }
         assert self.node_style_build in {"li_grouped", "full_atoms"}
         self.nl_builders = {}
@@ -477,6 +482,10 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                 .type(forces_batch[0].dtype)
             )
 
+            # if self.chemical_symbols:
+            #     value=type_onehot[[type_encoding[atom] for atom in atoms_batch.symbols]]
+
+
             if self.forces_divided_by_mass:
                 forces_divided_by_mass = forces / mass[:, None]
                 forces_divided_by_mass_mag = forces_divided_by_mass.norm(
@@ -551,6 +560,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             else:
                 mask = symbols == "Li"
                 target[mask] = log_diffusion
+                unique_symbols = ["Li"]
 
             # else:
             #     target = torch.tensor(
@@ -559,7 +569,6 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
             # idx = torch.tensor(deepcopy(idx))
 
             assert torch.isnan(value).any().item() is False
-
             data = Data(
                 pos=torch.tensor(
                     noise_structure.get_positions(),
@@ -601,7 +610,7 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
         num_atoms = []
 
         match self.strategy_sampling:
-            case "gaussian_noise":
+            case "gaussian_noise" | "non_sample":
                 for data in batch:
                     atoms_batch.extend(
                         self.num_noisy_configurations * [data.x["atoms"]]
@@ -616,15 +625,17 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
                     num_atoms.append(len(data.x["atoms"]))
                     index_batch.extend(self.num_noisy_configurations * [data.x["idx"]])
 
-                change_structures_batch = self.set_noise_to_structures(atoms_batch)
-
-                with torch.enable_grad():
-                    properites = self.properties_predictor.predict(
-                        change_structures_batch
-                    )
-                    forces_batch = properites["forces"]
-                    energy_batch = properites["energy"]
-
+                if self.strategy_sampling == "gaussian_noise":
+                    change_structures_batch = self.set_noise_to_structures(atoms_batch)
+                else:
+                    change_structures_batch = atoms_batch
+                # with torch.enable_grad():
+                #     properites = self.properties_predictor.predict(
+                #         change_structures_batch
+                #     )
+                #     forces_batch = properites["forces"]
+                #     energy_batch = properites["energy"]
+                
             case "trajectory" | "trajectory_per_interval":
                 for data in batch:
                     if self.strategy_sampling == "trajectory":
@@ -670,37 +681,51 @@ class AtomsToGraphCollater(Collater):  # pylint: disable=R0902, R0914
 
                 change_structures_batch = atoms_batch
 
-                forces_batch = []
-                energy_batch = []
+                # forces_batch = []
+                # energy_batch = []
 
-                if isinstance(self.properties_predictor, SevenNetPropertiesPredictor):
-                    for structure in atoms_batch:
-                        forces_batch.append(
-                            torch.tensor(
-                                structure.get_forces(),
-                                device=self.device,
-                                dtype=torch.float32,
-                            )
-                        )
+                # properites = self.properties_predictor.predict(
+                #                 change_structures_batch
+                #             )
+                
+                # forces_batch = properites["forces"]
+                # energy_batch = properites["energy"]
+            
+                # if isinstance(self.properties_predictor, SevenNetPropertiesPredictor):
+                #     for structure in atoms_batch:
+                #         forces_batch.append(
+                #             torch.tensor(
+                #                 structure.get_forces(),
+                #                 device=self.device,
+                #                 dtype=torch.float32,
+                #             )
+                #         )
 
-                        energy_batch.append(
-                            torch.tensor(
-                                structure.get_potential_energy(),
-                                device=self.device,
-                                dtype=torch.float32,
-                            ).unsqueeze(0)
-                        )
+                #         energy_batch.append(
+                #             torch.tensor(
+                #                 structure.get_potential_energy(),
+                #                 device=self.device,
+                #                 dtype=torch.float32,
+                #             ).unsqueeze(0)
+                #         )
 
-                else:
-                    with torch.enable_grad():
-                        properites = self.properties_predictor.predict(
+                # else:
+                #     with torch.enable_grad():
+                #         properites = self.properties_predictor.predict(
+                #             change_structures_batch
+                #         )
+                #         forces_batch = properites["forces"]
+                #         energy_batch = properites["energy"]
+            # case _:
+            #     raise NotImplementedError(self.strategy_sampling)
+
+        properites = self.properties_predictor.predict(
                             change_structures_batch
                         )
-                        forces_batch = properites["forces"]
-                        energy_batch = properites["energy"]
+    
+        forces_batch = properites["forces"]
+        energy_batch = properites["energy"]
 
-            case _:
-                raise NotImplementedError(self.strategy_sampling)
 
         if self.use_energies:
             equilibrium_structures_batch = list(data.x["atoms"] for data in batch)
@@ -756,7 +781,6 @@ def build_dataset_snapshots_by_sevennet(  # pylint: disable=R0913, R0914, R0917
 
     dataset = []
     for idx, doc in enumerate(tqdm(docs)):
-        print(idx)
         material_id = doc["material_id"]
 
         log_diffusion = np.log10(

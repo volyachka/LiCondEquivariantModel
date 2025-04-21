@@ -36,38 +36,6 @@ def get_element_symbol(atomic_number: int) -> str:
     element = Element.from_Z(atomic_number)
     return element.symbol.lower()
 
-
-def scatter_mse_loss(target, pred, index, reduction="mean"):
-    """
-    Compute Scatter Mean Squared Error (MSE) Loss.
-
-    Args:
-        pred (Tensor): Predicted values (batch_size,)
-        target (Tensor): Ground truth values (batch_size,)
-        index (Tensor): Indices (batch_size,)
-        reduction (str): Reduction type ('mean' or 'sum')
-
-    Returns:
-        Tensor: The computed loss
-    """
-
-    squared_error = (pred - target) ** 2
-    scatter_squared_error = torch_scatter.scatter_sum(squared_error, index, dim=0)
-    normalization = torch_scatter.scatter_sum(
-        torch.ones(squared_error.shape, device=squared_error.device), index, dim=0
-    )
-
-    scatter_squared_error /= normalization
-
-    if reduction == "mean":
-        return scatter_squared_error.mean()
-    if reduction == "sum":
-        return scatter_squared_error.sum()
-    if reduction is None:
-        return scatter_squared_error
-    raise NotImplementedError("Unknown type of aggregation")
-
-
 class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
     """
     Trainer class for managing model training and validation.
@@ -98,6 +66,11 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
             "device", "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.model = self.model.to(self.device)
+
+        checkpoint_path = self.config["model"].get("checkpoint_path", None)
+        if checkpoint_path is not None:
+            self.model.load_state_dict(torch.load(checkpoint_path))
+
         self.criterion = self._get_criterion(self.training_config["criterion"])
         self.optimizer = self._get_optimizer()
 
@@ -202,103 +175,107 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
         optimizer_name = self.config["optimizer"]["name"]
         learning_rate = self.config["optimizer"]["learning_rate"]
         weight_decay = self.config["optimizer"].get("weight_decay", 0)
+        checkpoint_path = self.config["optimizer"].get("checkpoint_path", None)
 
         if optimizer_name == "Adam":
-            return torch.optim.Adam(
+            optimizer = torch.optim.Adam(
                 self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
             )
+        
+            if checkpoint_path is not None:
+                optimizer.load_state_dict(torch.load(checkpoint_path))
+
+            return optimizer
+
         raise NotImplementedError(f"Unsupported optimizer: {optimizer_name}")
 
-    def _thorough_validation(self, dataloader, num_validations=5):
-        y_pred_agg = []
-        results = {}
+    # def _thorough_validation(self, dataloader, num_validations=20):
+    #     y_pred_agg = []
+    #     results = {}
 
-        for _ in trange(num_validations):
-            preds_epoch = []
-            indexes_epoch = []
+    #     for _ in trange(num_validations):
+    #         preds_epoch = []
+    #         indexes_epoch = []
 
-            with torch.set_grad_enabled(False):
-                for data, num_atoms in tqdm(dataloader):
+    #         with torch.set_grad_enabled(False):
+    #             for data, num_atoms in tqdm(dataloader):
 
-                    result = self._process_batch(data, num_atoms, train=False)
+    #                 result = self._process_batch(data, num_atoms, train=False)
+    #                 preds_epoch.extend(result["y_pred"])
+    #                 indexes_epoch.extend(result["data_id"])
 
-                    preds_epoch.extend(result["y_pred"])
-                    indexes_epoch.extend(result["data_id"])
+    #         preds_epoch = torch.stack(preds_epoch).cpu().detach()
+    #         indexes_epoch = torch.stack(indexes_epoch).cpu().detach().numpy()
+    #         indexes_epoch = np.argsort(indexes_epoch)
+    #         y_pred_agg.append(preds_epoch[indexes_epoch])
 
-            preds_epoch = torch.stack(preds_epoch).cpu().detach()
-            indexes_epoch = torch.stack(indexes_epoch).cpu().detach().numpy()
-            indexes_epoch = np.argsort(indexes_epoch)
-            y_pred_agg.append(preds_epoch[indexes_epoch])
+    #     y_pred = torch.vstack(y_pred_agg).mean(axis=0)
 
-        y_pred = torch.vstack(y_pred_agg).mean(axis=0)
+    #     y_true = []
+    #     mask = []
+    #     idx_true = []
 
-        y_true = []
-        mask = []
-        idx_true = []
+    #     for i, _ in dataloader:
+    #         batch_y_true = i.y[:: self.num_noisy_configurations]
+    #         data_id = i.idx[:: self.num_noisy_configurations]
+    #         batch_id = i.batch[:: self.num_noisy_configurations].cpu().detach().numpy()
 
-        for i, _ in dataloader:
-            batch_y_true = i.y[:: self.num_noisy_configurations]
-            data_id = i.idx[:: self.num_noisy_configurations]
-            batch_id = i.batch[:: self.num_noisy_configurations].cpu().detach().numpy()
+    #         if self.prediction_strategy == "PerAtom":
+    #             mask.extend(np.concatenate(i.symbols[:: self.num_noisy_configurations]))
+    #             y_true.append(batch_y_true)
+    #             idx_true.append(data_id)
 
-            if self.prediction_strategy == "PerSingleLi":
-                mask.extend(np.concatenate(i.symbols[:: self.num_noisy_configurations]))
-                y_true.append(batch_y_true)
-                idx_true.append(data_id)
+    #         if self.prediction_strategy == "PerChemicalElement":
+    #             unique_symbols = np.concatenate(
+    #                 i.symbols[:: self.num_noisy_configurations]
+    #             )
+    #             mask_id = 100 * batch_id + np.vectorize(get_chemical_number)(
+    #                 unique_symbols
+    #             )
+    #             _, indexes = np.unique(mask_id, return_inverse=True)
+    #             indexes = torch.tensor(indexes, device=self.device)
 
-            if self.prediction_strategy == "PerChemicalElement":
-                unique_symbols = np.concatenate(
-                    i.symbols[:: self.num_noisy_configurations]
-                )
-                mask_id = 100 * batch_id + np.vectorize(get_chemical_number)(
-                    unique_symbols
-                )
-                _, indexes = np.unique(mask_id, return_inverse=True)
-                indexes = torch.tensor(indexes, device=self.device)
+    #             batch_y_true_by_elements = torch_scatter.scatter_mean(
+    #                 batch_y_true, indexes, dim=0
+    #             )
+    #             batch_y_true_id = torch_scatter.scatter_mean(
+    #                 torch.tensor(mask_id, device=self.device), indexes, dim=0
+    #             )
+    #             batch_data_id = torch_scatter.scatter_mean(data_id, indexes, dim=0)
+    #             mask.extend(batch_y_true_id.cpu().numpy())
+    #             y_true.append(batch_y_true_by_elements)
+    #             idx_true.append(batch_data_id)
 
-                batch_y_true_by_elements = torch_scatter.scatter_mean(
-                    batch_y_true, indexes, dim=0
-                )
-                batch_y_true_id = torch_scatter.scatter_mean(
-                    torch.tensor(mask_id, device=self.device), indexes, dim=0
-                )
-                batch_data_id = torch_scatter.scatter_mean(data_id, indexes, dim=0)
-                mask.extend(batch_y_true_id.cpu().numpy())
-                y_true.append(batch_y_true_by_elements)
-                idx_true.append(batch_data_id)
+    #         if self.prediction_strategy == "PerSingleLi":
+    #             batch_data_id = torch_scatter.scatter_mean(batch_id, indexes, dim=0)
+    #             y_true.append(batch_y_true)
+    #             idx_true.append(batch_data_id)
 
-            if self.prediction_strategy == "PerSingleLi":
-                batch_data_id = torch_scatter.scatter_mean(batch_id, indexes, dim=0)
-                y_true.append(batch_y_true)
-                idx_true.append(batch_data_id)
+    #     y_true = torch.concatenate(y_true).cpu().detach()
+    #     idx_true = torch.concatenate(idx_true).cpu().detach()
+    #     y_true = y_true[np.argsort(idx_true)]
 
-        y_true = torch.concatenate(y_true).cpu().detach()
+    #     results["thorough_r2"] = r2_score(y_true, y_pred)
+    #     results["thorough_loss"] = mean_squared_error(y_true, y_pred)
+    #     results["y_true"] = y_true
+    #     results["y_pred"] = y_pred
 
-        idx_true = torch.concatenate(idx_true).cpu().detach()
+    #     if self.prediction_strategy != "PerSingleLi":
+    #         mask = np.stack(mask)
+    #         mask = mask[np.argsort(idx_true)]
+    #         if self.prediction_strategy == "PerAtom":
+    #             li_mask = mask == "Li"
+    #         elif self.prediction_strategy == "PerChemicalElement":
+    #             li_mask = mask % 100 == 3
 
-        y_true = y_true[np.argsort(idx_true)]
+    #         li_true = y_true[li_mask]
+    #         li_pred = y_pred[li_mask]
+    #         results["li_true"] = li_true.numpy()
+    #         results["li_pred"] = li_pred.numpy()
+    #         results["li_thorough_loss"] = self.criterion(li_pred, li_true)
+    #         results["li_thorough_r2"] = r2_score(li_true.numpy(), li_pred.numpy())
 
-        results["thorough_r2"] = r2_score(y_true, y_pred)
-        results["thorough_loss"] = mean_squared_error(y_true, y_pred)
-        results["y_true"] = y_true
-        results["y_pred"] = y_pred
-
-        if self.prediction_strategy != "PerSingleLi":
-            mask = np.stack(mask)
-            mask = mask[np.argsort(idx_true)]
-            if self.prediction_strategy == "PerAtom":
-                li_mask = mask == "Li"
-            elif self.prediction_strategy == "PerChemicalElement":
-                li_mask = mask % 100 == 3
-
-            li_true = y_true[li_mask]
-            li_pred = y_pred[li_mask]
-            results["li_true"] = li_true.numpy()
-            results["li_pred"] = li_pred.numpy()
-            results["li_thorough_loss"] = self.criterion(li_pred, li_true)
-            results["li_thorough_r2"] = r2_score(li_true.numpy(), li_pred.numpy())
-
-        return results
+    #     return results
 
     def _generate_index_arrays(self, num_atoms):
 
@@ -410,14 +387,15 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
             if not self.predict_importance:
                 final_predictions = final_predictions.squeeze()
 
-        y_true = data["y"][:: self.num_noisy_configurations]
-        batch_id = (
-            data["batch"][:: self.num_noisy_configurations].cpu().detach().numpy()
-        )
+        
+        mask = (data["batch"] % self.num_noisy_configurations == 0).cpu().detach().numpy()
+        batch_id = data["batch"][mask].cpu().detach().numpy()
+        y_true = data["y"][mask]
+        data_id = data["idx"][mask].cpu().detach().numpy()
+    
         y_pred = final_predictions.detach()
 
         assert final_predictions.shape == y_true.shape
-
         unique_symbols = np.concatenate(
             data["symbols"][:: self.num_noisy_configurations]
         )
@@ -432,22 +410,28 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
                 final_predictions, indexes, dim=0
             )
             y_true_by_elements = torch_scatter.scatter_mean(y_true, indexes, dim=0)
-            y_true_id = torch_scatter.scatter_mean(
-                torch.tensor(mask, device=self.device), indexes, dim=0
-            )
 
+            result["data_id"] = torch_scatter.scatter_mean(
+                torch.tensor(data_id, device=self.device), indexes, dim=0
+            )
             result["y_true"] = y_true_by_elements.detach()
             result["y_pred"] = y_pred_by_elements.detach()
             result["loss"] = self.criterion(y_true_by_elements, y_pred_by_elements)
-            result["data_id"] = y_true_id
             result["elements_values"] = elements_values
+
+            assert result["data_id"].shape == result["y_true"].shape
+            assert result["y_true"].shape == result["y_pred"].shape
 
         elif self.prediction_strategy == "PerAtom":
             result["loss"] = self.criterion(y_true, final_predictions)
             result["y_true"] = y_true
             result["y_pred"] = y_pred
             result["mask"] = unique_symbols
+            result["data_id"] = torch.tensor(data_id, device=self.device)
 
+            assert result["data_id"].shape == result["y_true"].shape
+            assert result["y_true"].shape == result["y_pred"].shape
+            
         result["entropy"] = entropy
         # result["unique_symbols"] = unique_symbols
         # result["elements_values"] = elements_values
@@ -551,6 +535,8 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
 
         results = {}
 
+        # assert self.criterion(y_true, y_pred) == total_loss / num_samples
+        
         results["loss"] = total_loss / num_samples
         results["r2"] = r2_score(y_true.numpy(), y_pred.numpy())
         results["mean_entropy"] = entropy.mean()
@@ -561,8 +547,10 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
             elif self.prediction_strategy == "PerChemicalElement":
                 li_mask = mask % 100 == 3
 
+
             li_true = y_true[li_mask]
             li_pred = y_pred[li_mask]
+
             results["li_true"] = li_true.numpy()
             results["li_pred"] = li_pred.numpy()
             results["li_loss"] = self.criterion(li_pred, li_true)
@@ -632,15 +620,15 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
                 }
             )
 
-    def _construct_logging_info_from_thorough_validation(self, info):
-        thorough_train_results = self._thorough_validation(self.train_dataloader)
-        self._update_thorough_results("train", thorough_train_results, info)
+    # def _construct_logging_info_from_thorough_validation(self, info):
+    #     thorough_train_results = self._thorough_validation(self.train_dataloader)
+    #     self._update_thorough_results("train", thorough_train_results, info)
 
-        for name, dataloader in self.val_dataloaders.items():
-            thorough_val_results = self._thorough_validation(dataloader)
-            self._update_thorough_results(name, thorough_val_results, info)
+    #     for name, dataloader in self.val_dataloaders.items():
+    #         thorough_val_results = self._thorough_validation(dataloader)
+    #         self._update_thorough_results(name, thorough_val_results, info)
 
-        return info
+    #     return info
 
     def _update_logging_info(self, prefix, results, info):
         info.update(
@@ -687,16 +675,16 @@ class Trainer:  # pylint: disable=R0902, R0914, R0915, E0606
             train_results = self.train_epoch()
             for name, dataloader in self.val_dataloaders.items():
                 val_results[name] = self.validate_epoch(dataloader)
-            if self.config["wandb"]["verbose"]:
-                info = self._construct_logging_info(epoch, train_results, val_results)
-                if (
-                    epoch == 1
-                    or epoch % self.training_config.get("save_model_every_n_epochs", 1)
-                    == 0
-                ):
-                    info = self._construct_logging_info_from_thorough_validation(info)
+            # if self.config["wandb"]["verbose"]:
+            #     info = self._construct_logging_info(epoch, train_results, val_results)
+            #     if (
+            #         epoch == 1
+            #         or epoch % self.training_config.get("save_model_every_n_epochs", 1)
+            #         == 0
+            #     ):
+            #         info = self._construct_logging_info_from_thorough_validation(info)
 
-                wandb.log(info, step=self.step)
+            #     wandb.log(info, step=self.step)
 
             if epoch % self.training_config.get("save_model_every_n_epochs", 1) == 0:
                 self._save_checkpoint(epoch)

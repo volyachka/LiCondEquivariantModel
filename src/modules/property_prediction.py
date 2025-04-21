@@ -115,11 +115,12 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
         forces = []
         energies = []
 
-        for sevennet_batch in sevennet_data:
-            sevennet_batch = sevennet_batch.to(self.device)
-            sevennet_output = self.sevennet_model(sevennet_batch)
-            forces.append(sevennet_output.inferred_force.detach())
-            energies.append(sevennet_output.inferred_total_energy.detach())
+        with torch.enable_grad():
+            for sevennet_batch in sevennet_data:
+                sevennet_batch = sevennet_batch.to(self.device)
+                sevennet_output = self.sevennet_model(sevennet_batch)
+                forces.append(sevennet_output.inferred_force.detach())
+                energies.append(sevennet_output.inferred_total_energy.detach())
 
         energies = list(torch.split(torch.cat(energies), 1))
         forces = list(torch.split(torch.cat(forces), num_atoms_per_structure, dim=0))
@@ -131,6 +132,35 @@ class SevenNetPropertiesPredictor:  # pylint: disable=R0903
             "energy": energies,
         }
 
+
+class ZeroValuesPropertiesPredictor:  # pylint: disable=R0903
+    """
+    A class that predicts atomic properties, such as forces and energy,
+    using random predicitons.
+    """
+
+    def __init__(self, device) -> None:
+        self.device = device
+
+    def predict(self, batch: List[Any]) -> dict:
+        """
+        Predicts atomic forces and energies for a batch of atomic structures.
+        """
+        forces = []
+        energies = []
+
+        for atoms in batch:
+            forces_atoms = torch.zeros(atoms.get_positions().shape, device=self.device)
+            energy_atoms = torch.zeros((1), device=self.device)
+            forces.append(forces_atoms)
+            energies.append(energy_atoms)
+
+        assert len(forces) == len(energies)
+        assert isinstance(forces, list) and isinstance(energies, list)
+        return {
+            "forces": forces,
+            "energy": energies,
+        }
 
 class RandomPropertiesPredictor:  # pylint: disable=R0903
     """
@@ -166,6 +196,37 @@ class RandomPropertiesPredictor:  # pylint: disable=R0903
         }
 
 
+class MDTrajectoryPropertiesPredictor:
+
+    def __init__(self, device) -> None:
+        self.device = device
+
+    def predict(self, batch: List[Any]) -> dict:
+        forces = []
+        energies = []
+        
+        for atoms in batch:
+            forces_atoms =  torch.tensor(
+                atoms.get_forces(),
+                device=self.device,
+                dtype=torch.float32,
+                )
+            energy_atoms =  torch.tensor(
+                                atoms.get_potential_energy(),
+                                device=self.device,
+                                dtype=torch.float32,
+                        ).unsqueeze(0)
+            
+            forces.append(forces_atoms)
+            energies.append(energy_atoms)
+
+        assert len(forces) == len(energies)
+        assert isinstance(forces, list) and isinstance(energies, list)
+        return {
+            "forces": forces,
+            "energy": energies,
+        }
+    
 class AseCalculatorPropertiesPredictor:  # pylint: disable=R0903
     """
     A class that predicts atomic properties, such as forces and energy,
